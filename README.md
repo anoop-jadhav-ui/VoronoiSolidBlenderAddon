@@ -12,11 +12,11 @@ Files:
 - `test_voronoi_addon.py` — headless validation script
 
 Current release:
-- addon version: `0.5.0`
+- addon version: `0.6.0`
 - Blender target: `4.3.0`
 
 What it does:
-- samples random points inside the selected solid
+- samples interior and shell seeds with `Blue Noise` spacing by default for more even Voronoi distribution, with optional `Random` sampling when you want looser variation
 - includes a `Lattice` mode that biases seeds to a shallow shell near the mesh surface
 - can output either clipped Voronoi cells, raw extracted lattice edges, a welded/deduplicated debug edge network, or a printable strut mesh
 - computes a Voronoi-like clipped cell for each point
@@ -60,6 +60,7 @@ Option 1: Run as an installable addon in Blender
 9. Set:
    - `Mode`
    - `Cells`
+   - `Sampling`
    - `Random Seed`
    - `Gap`
    - `Sample Attempts x`
@@ -68,6 +69,9 @@ Option 1: Run as an installable addon in Blender
 10. Click `Generate Voronoi Cells`.
 
 Lattice mode controls:
+- `Sampling`
+  - `Blue Noise` — spreads shell and interior seeds more evenly using a greedy best-candidate pass
+  - `Random` — preserves the older pure-random accepted seed placement
 - `Surface Seeds` — number of shell-oriented seeds near the source surface
 - `Interior Seeds` — optional extra seeds inside the volume
 - `Shell Depth` — max inward offset from the surface for shell seeds
@@ -102,6 +106,7 @@ Option 2: Run the included script directly in Blender
 6. Adjust the values at the top if needed:
    - `GENERATION_MODE`
    - `LATTICE_OUTPUT_MODE`
+   - `SAMPLING_MODE`
    - `CELL_COUNT`
    - `SURFACE_SEED_COUNT`
    - `INTERIOR_SEED_COUNT`

@@ -65,6 +65,63 @@ def surface_distance(obj, world_point, depsgraph):
     return (world_point - closest_world).length
 
 
+def nearest_neighbor_distances(points):
+    distances = []
+    for index, point in enumerate(points):
+        nearest = None
+        for other_index, other in enumerate(points):
+            if index == other_index:
+                continue
+            distance = (point - other).length
+            if nearest is None or distance < nearest:
+                nearest = distance
+        if nearest is not None:
+            distances.append(nearest)
+    return distances
+
+
+def run_seed_distribution_case(kind):
+    reset_scene()
+
+    if kind != "cube_blue_noise":
+        raise ValueError(kind)
+
+    bpy.ops.mesh.primitive_cube_add(size=2.0, location=(0, 0, 0))
+    src = bpy.context.active_object
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    settings = bpy.context.scene.voronoi_solid_settings
+    settings.generation_mode = 'SOLID'
+    settings.seed_count = 12
+    settings.random_seed = 19
+    settings.sample_attempt_multiplier = 120
+    settings.sampling_mode = 'RANDOM'
+    random_seeds = voronoi_solid_addon.generate_seed_points(src, settings, depsgraph)
+    settings.sampling_mode = 'BLUE_NOISE'
+    blue_noise_seeds = voronoi_solid_addon.generate_seed_points(src, settings, depsgraph)
+
+    if len(random_seeds) != settings.seed_count or len(blue_noise_seeds) != settings.seed_count:
+        raise RuntimeError(
+            f"Expected both sampling modes to create {settings.seed_count} seeds, got random={len(random_seeds)} blue_noise={len(blue_noise_seeds)}"
+        )
+
+    random_distances = nearest_neighbor_distances(random_seeds)
+    blue_noise_distances = nearest_neighbor_distances(blue_noise_seeds)
+    if min(blue_noise_distances) <= min(random_distances):
+        raise RuntimeError(
+            "Expected blue-noise interior sampling to increase minimum nearest-neighbor spacing: "
+            f"random={min(random_distances):.6f} blue_noise={min(blue_noise_distances):.6f}"
+        )
+
+    results.append(
+        {
+            "case": kind,
+            "random_min_spacing": round(min(random_distances), 6),
+            "blue_noise_min_spacing": round(min(blue_noise_distances), 6),
+            "sampling_mode": settings.sampling_mode,
+        }
+    )
+
+
 def run_lattice_seed_case(kind):
     reset_scene()
 
@@ -343,9 +400,14 @@ if settings.lattice_relax_iterations != 4 or round(settings.lattice_relax_streng
     raise RuntimeError(f"Expected Iteration 5 lattice defaults to enable gentle relaxation: iterations={settings.lattice_relax_iterations}, strength={settings.lattice_relax_strength}")
 if settings.strut_smooth_iterations != 4 or round(settings.strut_smooth_factor, 3) != 0.35:
     raise RuntimeError(f"Expected printable strut defaults to keep smoothing enabled: iterations={settings.strut_smooth_iterations}, factor={settings.strut_smooth_factor}")
+if not hasattr(settings, "sampling_mode"):
+    raise RuntimeError("Expected sampling_mode property to exist for blue-noise/Poisson seed generation")
+if settings.sampling_mode != 'BLUE_NOISE':
+    raise RuntimeError(f"Expected blue-noise sampling to be the default interior seed strategy, got {settings.sampling_mode}")
 for required_attr in ("node_subdivisions", "boundary_cleanup_iterations", "boundary_component_max_edges"):
     if not hasattr(settings, required_attr):
         raise RuntimeError(f"Expected settings property '{required_attr}' to exist for exposed cleanup/cap controls")
+run_seed_distribution_case("cube_blue_noise")
 run_lattice_seed_case("sphere_lattice")
 raw_network = run_lattice_network_case("sphere_lattice_raw", 'RAW_EDGES')
 welded_network = run_lattice_network_case("sphere_lattice_welded", 'FINAL_NETWORK')

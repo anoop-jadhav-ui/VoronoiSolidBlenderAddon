@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Voronoi Solid Pattern",
     "author": "Hermes Agent",
-    "version": (0, 5, 0),
+    "version": (0, 6, 0),
     "blender": (4, 3, 0),
     "location": "View3D > Sidebar > Voronoi",
     "description": "Generate Voronoi-style cells from any closed mesh solid",
@@ -59,6 +59,15 @@ class VoronoiSolidSettings(PropertyGroup):
             ('STRUTS', "Struts", "Build a printable strut mesh from the cleaned lattice network"),
         ),
         default='CELLS',
+    )
+    sampling_mode: EnumProperty(
+        name="Sampling",
+        items=(
+            ('BLUE_NOISE', "Blue Noise", "Spread seeds more evenly using a blue-noise style candidate selection pass"),
+            ('RANDOM', "Random", "Use plain random accepted interior/shell samples"),
+        ),
+        default='BLUE_NOISE',
+        description="Controls how Voronoi seeds are distributed inside the solid or surface shell",
     )
     random_seed: IntProperty(
         name="Random Seed",
@@ -252,6 +261,7 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
         target_collection = ensure_unique_collection(context.scene.collection, settings.collection_name or f"{source_obj.name}_Voronoi")
         target_collection["voronoi_generation_mode"] = settings.generation_mode
         target_collection["voronoi_seed_count"] = len(seeds)
+        target_collection["voronoi_sampling_mode"] = settings.sampling_mode
 
         created = 0
         created_objects = []
@@ -273,6 +283,7 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
             obj = bpy.data.objects.new(mesh.name, mesh)
             obj.matrix_world = Matrix.Identity(4)
             obj["voronoi_generation_mode"] = settings.generation_mode
+            obj["voronoi_sampling_mode"] = settings.sampling_mode
             target_collection.objects.link(obj)
             created += 1
             created_objects.append(obj)
@@ -305,6 +316,7 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
                 settings.strut_smooth_iterations,
                 settings.strut_smooth_factor,
             )
+            lattice_object["voronoi_sampling_mode"] = settings.sampling_mode
             cleanup_generated_objects(created_objects)
             created_objects = [lattice_object]
             created = 1
@@ -312,6 +324,7 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
             joined_object = join_objects(context, created_objects, f"{source_obj.name}_voronoi")
             if joined_object is not None:
                 joined_object["voronoi_generation_mode"] = settings.generation_mode
+                joined_object["voronoi_sampling_mode"] = settings.sampling_mode
                 created = 1
 
         if not settings.keep_original:
@@ -365,6 +378,7 @@ class VIEW3D_PT_voronoi_solid_panel(Panel):
                     if settings.strut_smooth_iterations > 0:
                         col.prop(settings, "strut_smooth_factor")
 
+        col.prop(settings, "sampling_mode")
         col.prop(settings, "random_seed")
         col.prop(settings, "gap")
         col.prop(settings, "sample_attempt_multiplier")
@@ -400,6 +414,7 @@ def generate_seed_points(obj, settings, depsgraph):
                     settings.random_seed,
                     settings.surface_shell_depth,
                     settings.surface_shell_bias,
+                    settings.sampling_mode,
                     depsgraph,
                 )
             )
@@ -410,6 +425,7 @@ def generate_seed_points(obj, settings, depsgraph):
                     settings.interior_seed_count,
                     settings.random_seed + 7919,
                     settings.sample_attempt_multiplier,
+                    settings.sampling_mode,
                     depsgraph,
                 )
             )
@@ -422,11 +438,12 @@ def generate_seed_points(obj, settings, depsgraph):
         settings.seed_count,
         settings.random_seed,
         settings.sample_attempt_multiplier,
+        settings.sampling_mode,
         depsgraph,
     )
 
 
-def sample_points_inside_object(obj, target_count, random_seed, attempt_multiplier, depsgraph):
+def sample_points_inside_object(obj, target_count, random_seed, attempt_multiplier, sampling_mode, depsgraph):
     bbox_world = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
     min_corner = Vector((
         min(v.x for v in bbox_world),
@@ -440,13 +457,10 @@ def sample_points_inside_object(obj, target_count, random_seed, attempt_multipli
     ))
 
     rng = random.Random(random_seed)
-    seeds = []
     attempts = max(target_count * attempt_multiplier, target_count)
+    candidates = []
 
     for _ in range(attempts):
-        if len(seeds) >= target_count:
-            break
-
         candidate = Vector((
             rng.uniform(min_corner.x, max_corner.x),
             rng.uniform(min_corner.y, max_corner.y),
@@ -456,17 +470,17 @@ def sample_points_inside_object(obj, target_count, random_seed, attempt_multipli
         if not point_is_inside_object(obj, candidate, depsgraph):
             continue
 
-        seeds.append(candidate)
+        candidates.append(candidate)
 
-    if len(seeds) < target_count:
+    if len(candidates) < target_count:
         raise RuntimeError(
-            f"Only found {len(seeds)} interior sample points out of {target_count}. Increase attempts or use a cleaner closed mesh."
+            f"Only found {len(candidates)} interior sample points out of {target_count}. Increase attempts or use a cleaner closed mesh."
         )
 
-    return seeds
+    return finalize_seed_candidates(candidates, target_count, random_seed, sampling_mode)
 
 
-def sample_points_on_surface_shell(obj, target_count, random_seed, shell_depth, shell_bias, depsgraph):
+def sample_points_on_surface_shell(obj, target_count, random_seed, shell_depth, shell_bias, sampling_mode, depsgraph):
     triangles = get_surface_triangles(obj, depsgraph)
     if not triangles:
         raise RuntimeError("Could not extract surface triangles for lattice seeding")
@@ -482,14 +496,11 @@ def sample_points_on_surface_shell(obj, target_count, random_seed, shell_depth, 
         running += triangle[3]
         cumulative.append(running)
 
-    seeds = []
+    candidates = []
     attempts = max(target_count * 10, target_count)
     exponent = 1.0 + max(0.0, min(1.0, shell_bias)) * 4.0
 
     for _ in range(attempts):
-        if len(seeds) >= target_count:
-            break
-
         triangle = pick_triangle(triangles, cumulative, running, rng)
         surface_point = random_point_on_triangle(triangle[0], triangle[1], triangle[2], rng)
         normal = triangle[4]
@@ -504,14 +515,52 @@ def sample_points_on_surface_shell(obj, target_count, random_seed, shell_depth, 
 
         if not point_is_inside_object(obj, candidate, depsgraph):
             continue
-        seeds.append(candidate)
+        candidates.append(candidate)
 
-    if len(seeds) < target_count:
+    if len(candidates) < target_count:
         raise RuntimeError(
-            f"Only found {len(seeds)} surface shell points out of {target_count}. Reduce shell depth or use a cleaner closed mesh."
+            f"Only found {len(candidates)} surface shell points out of {target_count}. Reduce shell depth or use a cleaner closed mesh."
         )
 
-    return seeds
+    return finalize_seed_candidates(candidates, target_count, random_seed, sampling_mode)
+
+
+def finalize_seed_candidates(candidates, target_count, random_seed, sampling_mode):
+    if len(candidates) < target_count:
+        raise RuntimeError(f"Only found {len(candidates)} valid seed candidates out of {target_count}")
+    if sampling_mode == 'RANDOM':
+        return [candidate.copy() for candidate in candidates[:target_count]]
+    if sampling_mode == 'BLUE_NOISE':
+        return select_blue_noise_candidates(candidates, target_count, random_seed)
+    raise RuntimeError(f"Unsupported sampling mode: {sampling_mode}")
+
+
+def select_blue_noise_candidates(candidates, target_count, random_seed):
+    rng = random.Random(random_seed)
+    remaining = [candidate.copy() for candidate in candidates]
+    if len(remaining) <= target_count:
+        return remaining
+
+    seed_index = rng.randrange(len(remaining))
+    selected = [remaining.pop(seed_index)]
+    min_distances = [distance_squared(point, selected[0]) for point in remaining]
+
+    while len(selected) < target_count and remaining:
+        next_index = max(range(len(remaining)), key=lambda index: (min_distances[index], -index))
+        next_point = remaining.pop(next_index)
+        min_distances.pop(next_index)
+        selected.append(next_point)
+        for index, point in enumerate(remaining):
+            candidate_distance = distance_squared(point, next_point)
+            if candidate_distance < min_distances[index]:
+                min_distances[index] = candidate_distance
+
+    return selected
+
+
+def distance_squared(a, b):
+    delta = a - b
+    return delta.dot(delta)
 
 
 def get_surface_triangles(obj, depsgraph):

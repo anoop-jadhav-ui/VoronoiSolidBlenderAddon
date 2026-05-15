@@ -10,6 +10,7 @@ import voronoi_solid_addon
 # Change these values before running if needed.
 GENERATION_MODE = 'SOLID'  # 'SOLID' or 'LATTICE'
 LATTICE_OUTPUT_MODE = 'CELLS'  # 'CELLS', 'RAW_EDGES', 'FINAL_NETWORK', or 'STRUTS'
+SAMPLING_MODE = 'BLUE_NOISE'  # 'BLUE_NOISE' or 'RANDOM'
 CELL_COUNT = 24
 SURFACE_SEED_COUNT = 24
 INTERIOR_SEED_COUNT = 6
@@ -49,6 +50,7 @@ if obj.mode != 'OBJECT':
 settings = bpy.context.scene.voronoi_solid_settings
 settings.generation_mode = GENERATION_MODE
 settings.lattice_output_mode = LATTICE_OUTPUT_MODE
+settings.sampling_mode = SAMPLING_MODE
 settings.seed_count = CELL_COUNT
 settings.surface_seed_count = SURFACE_SEED_COUNT
 settings.interior_seed_count = INTERIOR_SEED_COUNT
