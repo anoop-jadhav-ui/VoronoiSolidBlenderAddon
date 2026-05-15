@@ -40,6 +40,36 @@ def object_volume(obj):
     return volume
 
 
+def evaluated_object_volume(obj, depsgraph):
+    evaluated = obj.evaluated_get(depsgraph)
+    mesh = evaluated.to_mesh()
+    if mesh is None:
+        return 0.0
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    volume = abs(bm.calc_volume()) if len(bm.faces) >= 4 else 0.0
+    bm.free()
+    evaluated.to_mesh_clear()
+    return volume
+
+
+def evaluated_world_bounds(obj, depsgraph):
+    evaluated = obj.evaluated_get(depsgraph)
+    mesh = evaluated.to_mesh()
+    if mesh is None or len(mesh.vertices) == 0:
+        evaluated.to_mesh_clear()
+        raise RuntimeError(f"Could not evaluate bounds for {obj.name}")
+    coords = [obj.matrix_world @ vertex.co for vertex in mesh.vertices]
+    evaluated.to_mesh_clear()
+    min_x = min(co.x for co in coords)
+    min_y = min(co.y for co in coords)
+    min_z = min(co.z for co in coords)
+    max_x = max(co.x for co in coords)
+    max_y = max(co.y for co in coords)
+    max_z = max(co.z for co in coords)
+    return (min_x, min_y, min_z), (max_x, max_y, max_z)
+
+
 def boundary_edge_count(obj):
     bm = bmesh.new()
     bm.from_mesh(obj.data)
@@ -91,6 +121,7 @@ def run_seed_distribution_case(kind):
     depsgraph = bpy.context.evaluated_depsgraph_get()
     settings = bpy.context.scene.voronoi_solid_settings
     settings.generation_mode = 'SOLID'
+    settings.solid_output_mode = 'CELLS'
     settings.seed_count = 12
     settings.random_seed = 19
     settings.sample_attempt_multiplier = 120
@@ -324,6 +355,84 @@ def run_lattice_strut_case(
     return summary
 
 
+def run_carve_case(kind, seed_count, gap, array_count=1, array_offset=1.0):
+    reset_scene()
+
+    if kind not in {"cube_carved", "cube_carved_array"}:
+        raise ValueError(kind)
+
+    bpy.ops.mesh.primitive_cube_add(size=2.0, location=(0, 0, 0))
+    src = bpy.context.active_object
+    if array_count > 1:
+        mod = src.modifiers.new(name="ArraySource", type='ARRAY')
+        mod.count = array_count
+        mod.relative_offset_displace[0] = array_offset
+        mod.relative_offset_displace[1] = 0.0
+        mod.relative_offset_displace[2] = 0.0
+
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    source_volume = evaluated_object_volume(src, depsgraph)
+    (_source_min_x, _source_min_y, _source_min_z), (source_max_x, _source_max_y, _source_max_z) = evaluated_world_bounds(src, depsgraph)
+
+    settings = bpy.context.scene.voronoi_solid_settings
+    settings.generation_mode = 'SOLID'
+    settings.solid_output_mode = 'CARVED'
+    settings.seed_count = seed_count
+    settings.random_seed = 7
+    settings.gap = gap
+    settings.sample_attempt_multiplier = 120
+    settings.keep_original = True
+    settings.collection_name = f"{kind}_cells"
+    settings.join_cells = True
+
+    bpy.context.view_layer.objects.active = src
+    src.select_set(True)
+
+    result = bpy.ops.object.generate_voronoi_solid_cells()
+    if 'FINISHED' not in result:
+        raise RuntimeError(f"Operator failed for {kind}: {result}")
+
+    generated = [c for c in bpy.data.collections if c.name.startswith(settings.collection_name)]
+    if not generated:
+        raise RuntimeError(f"No collection created for {kind}")
+
+    collection = max(generated, key=lambda c: len(c.objects))
+    mesh_objects = [obj for obj in collection.objects if obj.type == 'MESH']
+    if len(mesh_objects) != 1:
+        raise RuntimeError(f"Expected one carved mesh object for {kind}, got {len(mesh_objects)}")
+
+    carved = mesh_objects[0]
+    carved_volume = object_volume(carved)
+    if carved_volume <= 0.0 or carved_volume >= source_volume:
+        raise RuntimeError(
+            f"Expected carved mesh volume to stay positive but below the source volume: carved={carved_volume}, source={source_volume}"
+        )
+
+    (_carved_min_x, _carved_min_y, _carved_min_z), (carved_max_x, _carved_max_y, _carved_max_z) = evaluated_world_bounds(carved, bpy.context.evaluated_depsgraph_get())
+    if array_count > 1 and carved_max_x < source_max_x - 0.25:
+        raise RuntimeError(
+            f"Expected carved mesh to preserve evaluated source extents for modifier-backed geometry: carved_max_x={carved_max_x}, source_max_x={source_max_x}"
+        )
+
+    boundary_edges = boundary_edge_count(carved)
+    if boundary_edges != 0:
+        raise RuntimeError(f"Expected carved mesh to stay watertight, found {boundary_edges} boundary edges")
+    if carved.get("voronoi_solid_output_mode") != 'CARVED':
+        raise RuntimeError(f"Expected carved mesh to store solid output metadata, got {carved.get('voronoi_solid_output_mode')}")
+
+    results.append(
+        {
+            "case": kind,
+            "output_mode": 'CARVED',
+            "source_volume": round(source_volume, 6),
+            "carved_volume": round(carved_volume, 6),
+            "source_max_x": round(source_max_x, 6),
+            "carved_max_x": round(carved_max_x, 6),
+            "boundary_edges": boundary_edges,
+        }
+    )
+
+
 def run_case(kind, seed_count, gap, join_cells=None, apply_wireframe=False):
     reset_scene()
 
@@ -338,6 +447,7 @@ def run_case(kind, seed_count, gap, join_cells=None, apply_wireframe=False):
 
     settings = bpy.context.scene.voronoi_solid_settings
     settings.generation_mode = 'SOLID'
+    settings.solid_output_mode = 'CELLS'
     settings.seed_count = seed_count
     settings.random_seed = 7
     settings.gap = gap
@@ -404,10 +514,16 @@ if not hasattr(settings, "sampling_mode"):
     raise RuntimeError("Expected sampling_mode property to exist for blue-noise/Poisson seed generation")
 if settings.sampling_mode != 'BLUE_NOISE':
     raise RuntimeError(f"Expected blue-noise sampling to be the default interior seed strategy, got {settings.sampling_mode}")
+if not hasattr(settings, "solid_output_mode"):
+    raise RuntimeError("Expected solid_output_mode property to exist for boolean carving")
+if settings.solid_output_mode != 'CELLS':
+    raise RuntimeError(f"Expected solid output mode to default to CELLS, got {settings.solid_output_mode}")
 for required_attr in ("node_subdivisions", "boundary_cleanup_iterations", "boundary_component_max_edges"):
     if not hasattr(settings, required_attr):
         raise RuntimeError(f"Expected settings property '{required_attr}' to exist for exposed cleanup/cap controls")
 run_seed_distribution_case("cube_blue_noise")
+run_carve_case("cube_carved", seed_count=8, gap=0.12)
+run_carve_case("cube_carved_array", seed_count=12, gap=0.08, array_count=2, array_offset=1.4)
 run_lattice_seed_case("sphere_lattice")
 raw_network = run_lattice_network_case("sphere_lattice_raw", 'RAW_EDGES')
 welded_network = run_lattice_network_case("sphere_lattice_welded", 'FINAL_NETWORK')

@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Voronoi Solid Pattern",
     "author": "Hermes Agent",
-    "version": (0, 6, 0),
+    "version": (0, 7, 0),
     "blender": (4, 3, 0),
     "location": "View3D > Sidebar > Voronoi",
     "description": "Generate Voronoi-style cells from any closed mesh solid",
@@ -28,6 +28,15 @@ class VoronoiSolidSettings(PropertyGroup):
             ('LATTICE', "Lattice Seeds", "Use shell-oriented surface-biased seeding for lattice development"),
         ),
         default='SOLID',
+    )
+    solid_output_mode: EnumProperty(
+        name="Solid Output",
+        items=(
+            ('CELLS', "Cells", "Keep the generated Voronoi cells as the output"),
+            ('CARVED', "Carved", "Subtract the joined Voronoi cells from a duplicate of the source mesh"),
+        ),
+        default='CELLS',
+        description="Controls whether solid mode outputs the cells themselves or a carved boolean result",
     )
     seed_count: IntProperty(
         name="Cells",
@@ -260,6 +269,7 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
 
         target_collection = ensure_unique_collection(context.scene.collection, settings.collection_name or f"{source_obj.name}_Voronoi")
         target_collection["voronoi_generation_mode"] = settings.generation_mode
+        target_collection["voronoi_solid_output_mode"] = settings.solid_output_mode
         target_collection["voronoi_seed_count"] = len(seeds)
         target_collection["voronoi_sampling_mode"] = settings.sampling_mode
 
@@ -283,6 +293,7 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
             obj = bpy.data.objects.new(mesh.name, mesh)
             obj.matrix_world = Matrix.Identity(4)
             obj["voronoi_generation_mode"] = settings.generation_mode
+            obj["voronoi_solid_output_mode"] = settings.solid_output_mode
             obj["voronoi_sampling_mode"] = settings.sampling_mode
             target_collection.objects.link(obj)
             created += 1
@@ -320,10 +331,32 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
             cleanup_generated_objects(created_objects)
             created_objects = [lattice_object]
             created = 1
+        elif settings.generation_mode == 'SOLID' and settings.solid_output_mode == 'CARVED':
+            cutter_object = join_objects(context, created_objects, f"{source_obj.name}_voronoi_cutters")
+            if cutter_object is None:
+                cleanup_generated_objects(created_objects)
+                bpy.data.collections.remove(target_collection)
+                self.report({'ERROR'}, "Could not build joined Voronoi cutters for boolean carving")
+                return {'CANCELLED'}
+            try:
+                carved_object = build_carved_output_object(target_collection, source_obj, cutter_object)
+            except RuntimeError as exc:
+                cleanup_generated_objects([cutter_object])
+                cleanup_generated_objects(created_objects)
+                bpy.data.collections.remove(target_collection)
+                self.report({'ERROR'}, str(exc))
+                return {'CANCELLED'}
+            carved_object["voronoi_generation_mode"] = settings.generation_mode
+            carved_object["voronoi_solid_output_mode"] = settings.solid_output_mode
+            carved_object["voronoi_sampling_mode"] = settings.sampling_mode
+            cleanup_generated_objects([cutter_object])
+            created_objects = [carved_object]
+            created = 1
         elif settings.join_cells and created_objects:
             joined_object = join_objects(context, created_objects, f"{source_obj.name}_voronoi")
             if joined_object is not None:
                 joined_object["voronoi_generation_mode"] = settings.generation_mode
+                joined_object["voronoi_solid_output_mode"] = settings.solid_output_mode
                 joined_object["voronoi_sampling_mode"] = settings.sampling_mode
                 created = 1
 
@@ -331,7 +364,12 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
             source_obj.hide_set(True)
             source_obj.hide_render = True
 
-        self.report({'INFO'}, f"Generated {created} Voronoi cells in collection '{target_collection.name}'")
+        result_label = "Voronoi result"
+        if settings.generation_mode == 'LATTICE' and settings.lattice_output_mode != 'CELLS':
+            result_label = f"lattice {settings.lattice_output_mode.lower()} output"
+        elif settings.generation_mode == 'SOLID' and settings.solid_output_mode == 'CARVED':
+            result_label = "carved Voronoi solid"
+        self.report({'INFO'}, f"Generated {created} {result_label} object(s) in collection '{target_collection.name}'")
         return {'FINISHED'}
 
 
@@ -352,6 +390,7 @@ class VIEW3D_PT_voronoi_solid_panel(Panel):
         col.prop(settings, "generation_mode")
 
         if settings.generation_mode == 'SOLID':
+            col.prop(settings, "solid_output_mode")
             col.prop(settings, "seed_count")
         else:
             col.prop(settings, "surface_seed_count")
@@ -1127,6 +1166,45 @@ def cleanup_generated_objects(objects):
         bpy.data.objects.remove(obj, do_unlink=True)
         if mesh is not None and mesh.users == 0:
             bpy.data.meshes.remove(mesh)
+
+
+def build_carved_output_object(collection, source_obj, cutter_obj, depsgraph=None):
+    object_name = f"{source_obj.name}_carved"
+    depsgraph = depsgraph or bpy.context.evaluated_depsgraph_get()
+    source_bm = build_world_bmesh(source_obj, depsgraph)
+    if len(source_bm.faces) == 0:
+        source_bm.free()
+        raise RuntimeError("Failed to evaluate the source mesh for boolean carving")
+    mesh = bpy.data.meshes.new(f"{object_name}_source")
+    source_bm.to_mesh(mesh)
+    mesh.update()
+    source_bm.free()
+    carved = bpy.data.objects.new(object_name, mesh)
+    carved.matrix_world = Matrix.Identity(4)
+    collection.objects.link(carved)
+
+    modifier = carved.modifiers.new(name="VoronoiCarve", type='BOOLEAN')
+    modifier.operation = 'DIFFERENCE'
+    modifier.solver = 'EXACT'
+    modifier.object = cutter_obj
+    bpy.context.view_layer.update()
+
+    evaluated = carved.evaluated_get(depsgraph)
+    carved_mesh = bpy.data.meshes.new_from_object(evaluated, depsgraph=depsgraph)
+    carved.modifiers.remove(modifier)
+
+    if carved_mesh is None or len(carved_mesh.vertices) == 0 or len(carved_mesh.polygons) == 0:
+        if carved_mesh is not None and carved_mesh.users == 0:
+            bpy.data.meshes.remove(carved_mesh)
+        cleanup_generated_objects([carved])
+        raise RuntimeError("Boolean carve produced an empty result; reduce gap or use a cleaner closed mesh")
+
+    old_mesh = carved.data
+    carved.data = carved_mesh
+    carved.data.update()
+    if old_mesh is not None and old_mesh.users == 0:
+        bpy.data.meshes.remove(old_mesh)
+    return carved
 
 
 def ensure_unique_collection(parent_collection, base_name):

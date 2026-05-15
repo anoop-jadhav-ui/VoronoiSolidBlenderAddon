@@ -12,13 +12,13 @@ Files:
 - `test_voronoi_addon.py` — headless validation script
 
 Current release:
-- addon version: `0.6.0`
+- addon version: `0.7.0`
 - Blender target: `4.3.0`
 
 What it does:
 - samples interior and shell seeds with `Blue Noise` spacing by default for more even Voronoi distribution, with optional `Random` sampling when you want looser variation
 - includes a `Lattice` mode that biases seeds to a shallow shell near the mesh surface
-- can output either clipped Voronoi cells, raw extracted lattice edges, a welded/deduplicated debug edge network, or a printable strut mesh
+- can output either clipped Voronoi cells, a carved boolean solid result, raw extracted lattice edges, a welded/deduplicated debug edge network, or a printable strut mesh
 - computes a Voronoi-like clipped cell for each point
 - by default joins generated cells into one mesh object so modifiers affect the whole result
 - can optionally keep cells as separate mesh objects in a new collection
@@ -34,6 +34,8 @@ Current limitations:
 Tested:
 - Blender 4.3.0
 - cube: 8 cells generated successfully
+- cube carved mode: boolean result generated successfully with lower volume than the source cube and `boundary_edges = 0`
+- modifier-backed carved mode: array-modified cube keeps evaluated source extents (`source_max_x = carved_max_x = 3.8`) so boolean carving respects unapplied source modifiers
 - UV sphere: 10 cells generated successfully
 - lattice raw-edge, welded-network, relaxed-network, and printable-strut outputs validated in the headless suite
 - printable strut output now verifies watertight cleanup with `boundary_edges = 0` on the test mesh
@@ -59,6 +61,7 @@ Option 1: Run as an installable addon in Blender
 8. Open the `Voronoi` tab.
 9. Set:
    - `Mode`
+   - `Solid Output` (`Cells` or `Carved` when using Solid mode)
    - `Cells`
    - `Sampling`
    - `Random Seed`
@@ -68,7 +71,10 @@ Option 1: Run as an installable addon in Blender
    - `Join Cells` (enabled by default so one modifier affects the whole result)
 10. Click `Generate Voronoi Cells`.
 
-Lattice mode controls:
+Generation controls:
+- `Solid Output`
+  - `Cells` — keeps the generated Voronoi cell meshes as the result
+  - `Carved` — joins the generated cells and subtracts them from a duplicate of the source solid to create a perforated/carved boolean shell
 - `Sampling`
   - `Blue Noise` — spreads shell and interior seeds more evenly using a greedy best-candidate pass
   - `Random` — preserves the older pure-random accepted seed placement
@@ -105,6 +111,7 @@ Option 2: Run the included script directly in Blender
    `/Users/anoopjadhav/Documents/vibeCodedProjects/VoronoiSolidBlenderAddon/run_selected_object.py`
 6. Adjust the values at the top if needed:
    - `GENERATION_MODE`
+   - `SOLID_OUTPUT_MODE`
    - `LATTICE_OUTPUT_MODE`
    - `SAMPLING_MODE`
    - `CELL_COUNT`
