@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Voronoi Solid Pattern",
     "author": "Hermes Agent",
-    "version": (0, 4, 1),
+    "version": (0, 5, 0),
     "blender": (4, 3, 0),
     "location": "View3D > Sidebar > Voronoi",
     "description": "Generate Voronoi-style cells from any closed mesh solid",
@@ -112,7 +112,7 @@ class VoronoiSolidSettings(PropertyGroup):
     )
     lattice_relax_iterations: IntProperty(
         name="Relax Iterations",
-        default=0,
+        default=4,
         min=0,
         max=24,
         description="Optional Laplacian relaxation passes applied to the cleaned lattice network before output",
@@ -145,6 +145,27 @@ class VoronoiSolidSettings(PropertyGroup):
         min=3,
         max=24,
         description="Number of sides used for each cylindrical printable strut",
+    )
+    node_subdivisions: IntProperty(
+        name="Node Detail",
+        default=1,
+        min=1,
+        max=4,
+        description="Subdivision level used for the spherical junction caps at welded lattice nodes",
+    )
+    boundary_cleanup_iterations: IntProperty(
+        name="Boundary Cleanup",
+        default=4,
+        min=0,
+        max=20,
+        description="How many cleanup passes are used to fill or collapse tiny open boundary loops in printable struts",
+    )
+    boundary_component_max_edges: IntProperty(
+        name="Tiny Boundary Max",
+        default=2,
+        min=0,
+        max=32,
+        description="Treat boundary loops up to this many edges as tiny cleanup candidates during printable strut repair",
     )
     strut_remesh_voxel_size: FloatProperty(
         name="Remesh Voxel",
@@ -277,6 +298,9 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
                 settings.strut_radius,
                 settings.node_radius_multiplier,
                 settings.strut_sides,
+                settings.node_subdivisions,
+                settings.boundary_cleanup_iterations,
+                settings.boundary_component_max_edges,
                 settings.strut_remesh_voxel_size,
                 settings.strut_smooth_iterations,
                 settings.strut_smooth_factor,
@@ -333,6 +357,9 @@ class VIEW3D_PT_voronoi_solid_panel(Panel):
                     col.prop(settings, "strut_radius")
                     col.prop(settings, "node_radius_multiplier")
                     col.prop(settings, "strut_sides")
+                    col.prop(settings, "node_subdivisions")
+                    col.prop(settings, "boundary_cleanup_iterations")
+                    col.prop(settings, "boundary_component_max_edges")
                     col.prop(settings, "strut_remesh_voxel_size")
                     col.prop(settings, "strut_smooth_iterations")
                     if settings.strut_smooth_iterations > 0:
@@ -635,6 +662,9 @@ def build_lattice_output_object(
     strut_radius,
     node_radius_multiplier,
     strut_sides,
+    node_subdivisions,
+    boundary_cleanup_iterations,
+    boundary_component_max_edges,
     strut_remesh_voxel_size,
     strut_smooth_iterations,
     strut_smooth_factor,
@@ -665,6 +695,9 @@ def build_lattice_output_object(
             strut_radius,
             node_radius_multiplier,
             strut_sides,
+            node_subdivisions,
+            boundary_cleanup_iterations,
+            boundary_component_max_edges,
             strut_remesh_voxel_size,
             strut_smooth_iterations,
             strut_smooth_factor,
@@ -696,6 +729,9 @@ def build_lattice_strut_object(
     strut_radius,
     node_radius_multiplier,
     strut_sides,
+    node_subdivisions,
+    boundary_cleanup_iterations,
+    boundary_component_max_edges,
     remesh_voxel_size,
     smooth_iterations,
     smooth_factor,
@@ -705,6 +741,9 @@ def build_lattice_strut_object(
 
     safe_radius = max(strut_radius, 0.001)
     safe_sides = max(3, int(strut_sides))
+    safe_node_subdivisions = max(1, int(node_subdivisions))
+    safe_boundary_cleanup_iterations = max(0, int(boundary_cleanup_iterations))
+    safe_boundary_component_max_edges = max(0, int(boundary_component_max_edges))
     node_radius = safe_radius * max(node_radius_multiplier, 0.5)
 
     for start, end in segments:
@@ -713,13 +752,13 @@ def build_lattice_strut_object(
     for point in unique_segment_points(segments, weld_tolerance):
         bmesh.ops.create_icosphere(
             bm,
-            subdivisions=1,
+            subdivisions=safe_node_subdivisions,
             radius=node_radius,
             matrix=Matrix.Translation(point),
         )
 
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=max(weld_tolerance, safe_radius * 0.25, EPSILON))
-    for _ in range(4):
+    for _ in range(safe_boundary_cleanup_iterations):
         boundary_edges = [edge for edge in bm.edges if edge.is_valid and edge.is_boundary]
         if not boundary_edges:
             break
@@ -734,7 +773,9 @@ def build_lattice_strut_object(
             bmesh.ops.triangle_fill(bm, edges=boundary_edges)
         except RuntimeError:
             pass
-        tiny_boundary_edges = find_small_boundary_components(bm, max_edges=2)
+        if safe_boundary_component_max_edges <= 0:
+            continue
+        tiny_boundary_edges = find_small_boundary_components(bm, max_edges=safe_boundary_component_max_edges)
         if not tiny_boundary_edges:
             break
         bmesh.ops.delete(bm, geom=tiny_boundary_edges, context='EDGES_FACES')
@@ -755,6 +796,12 @@ def build_lattice_strut_object(
     obj.matrix_world = Matrix.Identity(4)
     obj["voronoi_generation_mode"] = 'LATTICE'
     obj["voronoi_lattice_output_mode"] = 'STRUTS'
+    obj["voronoi_node_subdivisions"] = safe_node_subdivisions
+    obj["voronoi_boundary_cleanup_iterations"] = safe_boundary_cleanup_iterations
+    obj["voronoi_boundary_component_max_edges"] = safe_boundary_component_max_edges
+    obj["voronoi_remesh_voxel_size"] = float(remesh_voxel_size)
+    obj["voronoi_strut_smooth_iterations"] = max(0, int(smooth_iterations))
+    obj["voronoi_strut_smooth_factor"] = float(max(0.0, min(1.0, smooth_factor)))
     collection.objects.link(obj)
     voxel_size = remesh_voxel_size if remesh_voxel_size > 0.0 else max(safe_radius * 0.8, weld_tolerance * 0.75, 0.01)
     voxel_remesh_object(obj, voxel_size)

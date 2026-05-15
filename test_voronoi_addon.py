@@ -164,7 +164,16 @@ def run_lattice_network_case(kind, output_mode, *, relax_iterations=0, relax_str
     return summary
 
 
-def run_lattice_strut_case(kind, *, remesh_voxel_size=0.0, smooth_iterations=4, smooth_factor=0.35):
+def run_lattice_strut_case(
+    kind,
+    *,
+    remesh_voxel_size=0.0,
+    smooth_iterations=4,
+    smooth_factor=0.35,
+    node_subdivisions=1,
+    boundary_cleanup_iterations=4,
+    boundary_component_max_edges=2,
+):
     reset_scene()
 
     bpy.ops.mesh.primitive_uv_sphere_add(radius=1.25, segments=32, ring_count=16, location=(0, 0, 0))
@@ -189,6 +198,9 @@ def run_lattice_strut_case(kind, *, remesh_voxel_size=0.0, smooth_iterations=4, 
     settings.strut_radius = 0.035
     settings.node_radius_multiplier = 1.35
     settings.strut_sides = 8
+    settings.node_subdivisions = node_subdivisions
+    settings.boundary_cleanup_iterations = boundary_cleanup_iterations
+    settings.boundary_component_max_edges = boundary_component_max_edges
     settings.strut_remesh_voxel_size = remesh_voxel_size
     settings.strut_smooth_iterations = smooth_iterations
     settings.strut_smooth_factor = smooth_factor
@@ -244,6 +256,12 @@ def run_lattice_strut_case(kind, *, remesh_voxel_size=0.0, smooth_iterations=4, 
         "remesh_voxel_size": round(remesh_voxel_size, 4),
         "smooth_iterations": smooth_iterations,
         "smooth_factor": round(smooth_factor, 3),
+        "node_subdivisions": node_subdivisions,
+        "boundary_cleanup_iterations": boundary_cleanup_iterations,
+        "boundary_component_max_edges": boundary_component_max_edges,
+        "node_subdivisions_prop": int(target.get("voronoi_node_subdivisions", -1)),
+        "boundary_cleanup_iterations_prop": int(target.get("voronoi_boundary_cleanup_iterations", -1)),
+        "boundary_component_max_edges_prop": int(target.get("voronoi_boundary_component_max_edges", -1)),
     }
     results.append(summary)
     return summary
@@ -320,6 +338,14 @@ def run_case(kind, seed_count, gap, join_cells=None, apply_wireframe=False):
     )
 
 voronoi_solid_addon.register()
+settings = bpy.context.scene.voronoi_solid_settings
+if settings.lattice_relax_iterations != 4 or round(settings.lattice_relax_strength, 3) != 0.35:
+    raise RuntimeError(f"Expected Iteration 5 lattice defaults to enable gentle relaxation: iterations={settings.lattice_relax_iterations}, strength={settings.lattice_relax_strength}")
+if settings.strut_smooth_iterations != 4 or round(settings.strut_smooth_factor, 3) != 0.35:
+    raise RuntimeError(f"Expected printable strut defaults to keep smoothing enabled: iterations={settings.strut_smooth_iterations}, factor={settings.strut_smooth_factor}")
+for required_attr in ("node_subdivisions", "boundary_cleanup_iterations", "boundary_component_max_edges"):
+    if not hasattr(settings, required_attr):
+        raise RuntimeError(f"Expected settings property '{required_attr}' to exist for exposed cleanup/cap controls")
 run_lattice_seed_case("sphere_lattice")
 raw_network = run_lattice_network_case("sphere_lattice_raw", 'RAW_EDGES')
 welded_network = run_lattice_network_case("sphere_lattice_welded", 'FINAL_NETWORK')
@@ -335,8 +361,23 @@ if relaxed_network["edges"] > welded_network["edges"] or relaxed_network["vertic
 if relaxed_network["vertex_signature"] == welded_network["vertex_signature"]:
     raise RuntimeError(f"Expected relaxed network geometry to change vertex positions: welded={welded_network}, relaxed={relaxed_network}")
 default_struts = run_lattice_strut_case("sphere_lattice_struts")
+detailed_struts = run_lattice_strut_case(
+    "sphere_lattice_struts_detailed_nodes",
+    remesh_voxel_size=0.03,
+    smooth_iterations=4,
+    smooth_factor=0.35,
+    node_subdivisions=2,
+    boundary_cleanup_iterations=6,
+    boundary_component_max_edges=4,
+)
 coarse_struts = run_lattice_strut_case("sphere_lattice_struts_coarse", remesh_voxel_size=0.06, smooth_iterations=0)
 smoothed_struts = run_lattice_strut_case("sphere_lattice_struts_smoothed", remesh_voxel_size=0.03, smooth_iterations=6, smooth_factor=0.45)
+if detailed_struts["node_subdivisions_prop"] != 2:
+    raise RuntimeError(f"Expected node subdivision control to propagate to the output object: {detailed_struts}")
+if detailed_struts["boundary_cleanup_iterations_prop"] != 6:
+    raise RuntimeError(f"Expected boundary cleanup iteration control to propagate to the output object: {detailed_struts}")
+if detailed_struts["boundary_component_max_edges_prop"] != 4:
+    raise RuntimeError(f"Expected boundary cleanup component threshold to propagate to the output object: {detailed_struts}")
 if coarse_struts["faces"] >= smoothed_struts["faces"]:
     raise RuntimeError(f"Expected finer/smoothed strut cleanup to produce denser mesh detail: coarse={coarse_struts}, smoothed={smoothed_struts}")
 run_case("cube_default_joined", seed_count=8, gap=0.05)

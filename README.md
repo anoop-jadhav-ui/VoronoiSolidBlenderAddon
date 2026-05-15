@@ -24,7 +24,7 @@ Current limitations:
 - this is a geometry prototype, not a polished production addon yet
 - performance drops as cell count rises because each cell is clipped against every other point
 - for very thin/complex shapes, increase `sample_attempt_multiplier`
-- `Struts` now performs an Iteration 4 cleanup pass with optional network relaxation, voxel remesh cleanup, and post-remesh smoothing to produce a watertight printable lattice mesh; only deeper reference matching is still pending
+- `Struts` now performs an Iteration 5 cleanup pass with gentle default network relaxation, configurable node-detail and boundary-repair controls, voxel remesh cleanup, and post-remesh smoothing to produce a watertight printable lattice mesh while getting closer to the Grasshopper-style reference
 
 Tested:
 - Blender 4.3.0
@@ -71,11 +71,14 @@ Lattice mode controls:
 - `Weld Tolerance` — merges nearby network vertices in debug and strut output
 - `Min Edge Length` — drops tiny degenerate segments during cleanup
 - `Duplicate Edge Tol` — removes nearly identical segments during cleanup
-- `Relax Iterations` — optional Laplacian-style relaxation passes on the cleaned lattice network
+- `Relax Iterations` — optional Laplacian-style relaxation passes on the cleaned lattice network (defaults to a gentle value for a softer Grasshopper-like flow)
 - `Relax Strength` — how strongly each relaxed lattice vertex moves toward its neighbors
 - `Strut Radius` — radius of each printable lattice tube
 - `Node Radius x` — expands node caps at welded junctions
 - `Strut Sides` — cylinder side count for printable struts
+- `Node Detail` — subdivision level for the spherical junction caps
+- `Boundary Cleanup` — how many repair passes to run when closing tiny printable strut openings
+- `Tiny Boundary Max` — boundary loops up to this edge count are treated as tiny cleanup candidates
 - `Remesh Voxel` — explicit voxel size for printable strut cleanup; `0` keeps the automatic detail size
 - `Smooth Iterations` — extra post-remesh smoothing passes for printable struts
 - `Smooth Factor` — strength of each post-remesh smoothing pass
@@ -103,6 +106,9 @@ Option 2: Run the included script directly in Blender
    - `STRUT_RADIUS`
    - `NODE_RADIUS_MULTIPLIER`
    - `STRUT_SIDES`
+   - `NODE_SUBDIVISIONS`
+   - `BOUNDARY_CLEANUP_ITERATIONS`
+   - `BOUNDARY_COMPONENT_MAX_EDGES`
    - `STRUT_REMESH_VOXEL_SIZE`
    - `STRUT_SMOOTH_ITERATIONS`
    - `STRUT_SMOOTH_FACTOR`
@@ -121,6 +127,8 @@ Recommended starting values:
 - visible gaps: `GAP = 0.05 to 0.12`
 - complex meshes: `ATTEMPT_MULTIPLIER = 80 to 150`
 - relaxed lattice preview: `LATTICE_RELAX_ITERATIONS = 3 to 6`, `LATTICE_RELAX_STRENGTH = 0.25 to 0.45`
+- printable node detail: `NODE_SUBDIVISIONS = 1 to 2` for lighter meshes, `3` only when you need rounder junctions and can afford the extra density
+- printable boundary repair: `BOUNDARY_CLEANUP_ITERATIONS = 4 to 8`, `BOUNDARY_COMPONENT_MAX_EDGES = 2 to 6`
 - printable struts: `STRUT_REMESH_VOXEL_SIZE = 0.0` for auto or `0.02 to 0.05` to tune detail, `STRUT_SMOOTH_ITERATIONS = 2 to 6`, `STRUT_SMOOTH_FACTOR = 0.25 to 0.45`
 
 If generation fails:
