@@ -7,8 +7,13 @@ This project contains a Blender addon that generates Voronoi-style volumetric ce
 
 Files:
 - `voronoi_solid_addon/__init__.py` — installable addon
+- `VoronoiSolidPatternAddon.zip` — packaged addon zip ready to install from Blender Preferences
 - `run_selected_object.py` — quick runner script for the currently selected object
 - `test_voronoi_addon.py` — headless validation script
+
+Current release:
+- addon version: `0.5.0`
+- Blender target: `4.3.0`
 
 What it does:
 - samples random points inside the selected solid
@@ -30,6 +35,8 @@ Tested:
 - Blender 4.3.0
 - cube: 8 cells generated successfully
 - UV sphere: 10 cells generated successfully
+- lattice raw-edge, welded-network, relaxed-network, and printable-strut outputs validated in the headless suite
+- printable strut output now verifies watertight cleanup with `boundary_edges = 0` on the test mesh
 
 Headless test command:
 ```bash
@@ -37,18 +44,20 @@ Headless test command:
 ```
 
 Expected result:
-- Blender prints that it generated the cube and sphere cell collections
+- Blender prints passing generation checks for the cube and sphere cases, including lattice/strut validation
 - exits with code 0
 
 Option 1: Run as an installable addon in Blender
 1. Open Blender.
 2. Go to Edit > Preferences > Add-ons.
-3. Click the dropdown in the top-right and choose Install from Disk if you zip the `voronoi_solid_addon` folder, or copy the folder into your Blender addons directory.
-4. Enable `Voronoi Solid Pattern`.
-5. Select a closed mesh object in Object Mode.
-6. Open the 3D View sidebar with `N`.
-7. Open the `Voronoi` tab.
-8. Set:
+3. Click the dropdown in the top-right and choose Install from Disk.
+4. Select:
+   `/Users/anoopjadhav/Documents/vibeCodedProjects/VoronoiSolidBlenderAddon/VoronoiSolidPatternAddon.zip`
+5. Enable `Voronoi Solid Pattern`.
+6. Select a closed mesh object in Object Mode.
+7. Open the 3D View sidebar with `N`.
+8. Open the `Voronoi` tab.
+9. Set:
    - `Mode`
    - `Cells`
    - `Random Seed`
@@ -56,7 +65,7 @@ Option 1: Run as an installable addon in Blender
    - `Sample Attempts x`
    - `Collection`
    - `Join Cells` (enabled by default so one modifier affects the whole result)
-9. Click `Generate Voronoi Cells`.
+10. Click `Generate Voronoi Cells`.
 
 Lattice mode controls:
 - `Surface Seeds` — number of shell-oriented seeds near the source surface
@@ -130,6 +139,17 @@ Recommended starting values:
 - printable node detail: `NODE_SUBDIVISIONS = 1 to 2` for lighter meshes, `3` only when you need rounder junctions and can afford the extra density
 - printable boundary repair: `BOUNDARY_CLEANUP_ITERATIONS = 4 to 8`, `BOUNDARY_COMPONENT_MAX_EDGES = 2 to 6`
 - printable struts: `STRUT_REMESH_VOXEL_SIZE = 0.0` for auto or `0.02 to 0.05` to tune detail, `STRUT_SMOOTH_ITERATIONS = 2 to 6`, `STRUT_SMOOTH_FACTOR = 0.25 to 0.45`
+
+Recommended printable strut preset for a medium-sized object:
+- for roughly `100 x 100 mm` output scale, start with a medium-density strut layout rather than very dense cells
+- use `LATTICE_RELAX_ITERATIONS = 4`
+- use `LATTICE_RELAX_STRENGTH = 0.35`
+- use `NODE_SUBDIVISIONS = 1`
+- use `BOUNDARY_CLEANUP_ITERATIONS = 4`
+- use `BOUNDARY_COMPONENT_MAX_EDGES = 2`
+- use `STRUT_SMOOTH_ITERATIONS = 4`
+- use `STRUT_SMOOTH_FACTOR = 0.35 to 0.45`
+- keep `STRUT_REMESH_VOXEL_SIZE = 0.0` first, then switch to an explicit voxel size only if you need to trade detail for a cleaner printable surface
 
 If generation fails:
 - make sure the object is a closed mesh
