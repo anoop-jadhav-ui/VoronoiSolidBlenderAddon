@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Voronoi Solid Pattern",
     "author": "Hermes Agent",
-    "version": (0, 4, 0),
+    "version": (0, 4, 1),
     "blender": (4, 3, 0),
     "location": "View3D > Sidebar > Voronoi",
     "description": "Generate Voronoi-style cells from any closed mesh solid",
@@ -110,6 +110,21 @@ class VoronoiSolidSettings(PropertyGroup):
         max=1.0,
         description="Treat nearly identical lattice segments as duplicates within this tolerance",
     )
+    lattice_relax_iterations: IntProperty(
+        name="Relax Iterations",
+        default=0,
+        min=0,
+        max=24,
+        description="Optional Laplacian relaxation passes applied to the cleaned lattice network before output",
+    )
+    lattice_relax_strength: FloatProperty(
+        name="Relax Strength",
+        default=0.35,
+        min=0.0,
+        max=1.0,
+        subtype='FACTOR',
+        description="How strongly each lattice relaxation pass pulls vertices toward their neighbors",
+    )
     strut_radius: FloatProperty(
         name="Strut Radius",
         default=0.03,
@@ -130,6 +145,28 @@ class VoronoiSolidSettings(PropertyGroup):
         min=3,
         max=24,
         description="Number of sides used for each cylindrical printable strut",
+    )
+    strut_remesh_voxel_size: FloatProperty(
+        name="Remesh Voxel",
+        default=0.0,
+        min=0.0,
+        max=1.0,
+        description="Voxel size used for printable strut cleanup; 0 keeps the automatic detail size",
+    )
+    strut_smooth_iterations: IntProperty(
+        name="Smooth Iterations",
+        default=4,
+        min=0,
+        max=50,
+        description="Extra vertex smoothing passes applied after strut remeshing",
+    )
+    strut_smooth_factor: FloatProperty(
+        name="Smooth Factor",
+        default=0.35,
+        min=0.0,
+        max=1.0,
+        subtype='FACTOR',
+        description="Strength of each post-remesh smoothing pass for printable struts",
     )
     sample_attempt_multiplier: IntProperty(
         name="Sample Attempts x",
@@ -235,9 +272,14 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
                 settings.weld_tolerance,
                 settings.minimum_edge_length,
                 settings.duplicate_edge_tolerance,
+                settings.lattice_relax_iterations,
+                settings.lattice_relax_strength,
                 settings.strut_radius,
                 settings.node_radius_multiplier,
                 settings.strut_sides,
+                settings.strut_remesh_voxel_size,
+                settings.strut_smooth_iterations,
+                settings.strut_smooth_factor,
             )
             cleanup_generated_objects(created_objects)
             created_objects = [lattice_object]
@@ -284,10 +326,17 @@ class VIEW3D_PT_voronoi_solid_panel(Panel):
                 col.prop(settings, "weld_tolerance")
                 col.prop(settings, "minimum_edge_length")
                 col.prop(settings, "duplicate_edge_tolerance")
+                col.prop(settings, "lattice_relax_iterations")
+                if settings.lattice_relax_iterations > 0:
+                    col.prop(settings, "lattice_relax_strength")
                 if settings.lattice_output_mode == 'STRUTS':
                     col.prop(settings, "strut_radius")
                     col.prop(settings, "node_radius_multiplier")
                     col.prop(settings, "strut_sides")
+                    col.prop(settings, "strut_remesh_voxel_size")
+                    col.prop(settings, "strut_smooth_iterations")
+                    if settings.strut_smooth_iterations > 0:
+                        col.prop(settings, "strut_smooth_factor")
 
         col.prop(settings, "random_seed")
         col.prop(settings, "gap")
@@ -573,7 +622,23 @@ def shrink_cell(bm, center, gap):
     bm.normal_update()
 
 
-def build_lattice_output_object(collection, cell_objects, source_name, output_mode, weld_tolerance, minimum_edge_length, duplicate_edge_tolerance, strut_radius, node_radius_multiplier, strut_sides):
+def build_lattice_output_object(
+    collection,
+    cell_objects,
+    source_name,
+    output_mode,
+    weld_tolerance,
+    minimum_edge_length,
+    duplicate_edge_tolerance,
+    lattice_relax_iterations,
+    lattice_relax_strength,
+    strut_radius,
+    node_radius_multiplier,
+    strut_sides,
+    strut_remesh_voxel_size,
+    strut_smooth_iterations,
+    strut_smooth_factor,
+):
     raw_segments = extract_edge_segments(cell_objects)
 
     if output_mode == 'RAW_EDGES':
@@ -586,10 +651,24 @@ def build_lattice_output_object(collection, cell_objects, source_name, output_mo
     if not clean_segments:
         raise RuntimeError("No lattice edge segments remained after extraction/cleanup")
 
+    if lattice_relax_iterations > 0 and lattice_relax_strength > 0.0:
+        clean_segments = relax_edge_segments(clean_segments, weld_tolerance, lattice_relax_iterations, lattice_relax_strength)
+
     if output_mode == 'FINAL_NETWORK':
         return build_edge_debug_object(collection, source_name, output_mode, clean_segments, True, weld_tolerance)
     if output_mode == 'STRUTS':
-        return build_lattice_strut_object(collection, source_name, clean_segments, weld_tolerance, strut_radius, node_radius_multiplier, strut_sides)
+        return build_lattice_strut_object(
+            collection,
+            source_name,
+            clean_segments,
+            weld_tolerance,
+            strut_radius,
+            node_radius_multiplier,
+            strut_sides,
+            strut_remesh_voxel_size,
+            strut_smooth_iterations,
+            strut_smooth_factor,
+        )
 
     raise RuntimeError(f"Unsupported lattice output mode: {output_mode}")
 
@@ -609,7 +688,18 @@ def build_edge_debug_object(collection, source_name, output_mode, segments, uniq
     return obj
 
 
-def build_lattice_strut_object(collection, source_name, segments, weld_tolerance, strut_radius, node_radius_multiplier, strut_sides):
+def build_lattice_strut_object(
+    collection,
+    source_name,
+    segments,
+    weld_tolerance,
+    strut_radius,
+    node_radius_multiplier,
+    strut_sides,
+    remesh_voxel_size,
+    smooth_iterations,
+    smooth_factor,
+):
     object_name = f"{source_name}_struts"
     bm = bmesh.new()
 
@@ -666,7 +756,9 @@ def build_lattice_strut_object(collection, source_name, segments, weld_tolerance
     obj["voronoi_generation_mode"] = 'LATTICE'
     obj["voronoi_lattice_output_mode"] = 'STRUTS'
     collection.objects.link(obj)
-    voxel_remesh_object(obj, max(safe_radius * 0.8, weld_tolerance * 0.75, 0.01))
+    voxel_size = remesh_voxel_size if remesh_voxel_size > 0.0 else max(safe_radius * 0.8, weld_tolerance * 0.75, 0.01)
+    voxel_remesh_object(obj, voxel_size)
+    smooth_mesh_object(obj, smooth_iterations, smooth_factor)
     return obj
 
 
@@ -692,6 +784,28 @@ def voxel_remesh_object(obj, voxel_size):
     obj.data.update()
     if old_mesh is not None and old_mesh.users == 0:
         bpy.data.meshes.remove(old_mesh)
+
+
+def smooth_mesh_object(obj, iterations, factor):
+    safe_iterations = max(0, int(iterations))
+    safe_factor = max(0.0, min(1.0, factor))
+    if safe_iterations <= 0 or safe_factor <= 0.0 or obj is None or obj.type != 'MESH' or obj.data is None:
+        return
+
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    for _ in range(safe_iterations):
+        bmesh.ops.smooth_vert(
+            bm,
+            verts=bm.verts,
+            factor=safe_factor,
+            use_axis_x=True,
+            use_axis_y=True,
+            use_axis_z=True,
+        )
+    bm.to_mesh(obj.data)
+    obj.data.update()
+    bm.free()
 
 
 def append_cylinder_segment(bm, start, end, radius, sides):
@@ -750,6 +864,42 @@ def find_small_boundary_components(bm, max_edges):
         if 0 < len(component) <= max_edges:
             tiny_edges.extend(component)
     return tiny_edges
+
+
+def relax_edge_segments(segments, tolerance, iterations, strength):
+    safe_iterations = max(0, int(iterations))
+    safe_strength = max(0.0, min(1.0, strength))
+    if safe_iterations <= 0 or safe_strength <= 0.0 or not segments:
+        return segments
+
+    point_map = {}
+    adjacency = {}
+    edge_keys = []
+    quantize_tolerance = max(tolerance, EPSILON)
+
+    for start, end in segments:
+        start_key = quantize_vector(start, quantize_tolerance)
+        end_key = quantize_vector(end, quantize_tolerance)
+        point_map.setdefault(start_key, start.copy())
+        point_map.setdefault(end_key, end.copy())
+        adjacency.setdefault(start_key, set()).add(end_key)
+        adjacency.setdefault(end_key, set()).add(start_key)
+        edge_keys.append((start_key, end_key))
+
+    relaxed = {key: value.copy() for key, value in point_map.items()}
+    for _ in range(safe_iterations):
+        updated = {key: value.copy() for key, value in relaxed.items()}
+        for key, neighbors in adjacency.items():
+            if len(neighbors) < 3:
+                continue
+            total = Vector((0.0, 0.0, 0.0))
+            for neighbor_key in neighbors:
+                total += relaxed[neighbor_key]
+            average = total / len(neighbors)
+            updated[key] = relaxed[key].lerp(average, safe_strength)
+        relaxed = updated
+
+    return [(relaxed[start_key].copy(), relaxed[end_key].copy()) for start_key, end_key in edge_keys]
 
 
 def extract_edge_segments(objects):

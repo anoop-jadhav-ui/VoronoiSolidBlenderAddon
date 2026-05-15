@@ -24,7 +24,7 @@ Current limitations:
 - this is a geometry prototype, not a polished production addon yet
 - performance drops as cell count rises because each cell is clipped against every other point
 - for very thin/complex shapes, increase `sample_attempt_multiplier`
-- `Struts` now performs an Iteration 4 cleanup pass with voxel remesh smoothing to produce a watertight printable lattice mesh; deeper network relaxation/tuning is still pending
+- `Struts` now performs an Iteration 4 cleanup pass with optional network relaxation, voxel remesh cleanup, and post-remesh smoothing to produce a watertight printable lattice mesh; only deeper reference matching is still pending
 
 Tested:
 - Blender 4.3.0
@@ -71,9 +71,14 @@ Lattice mode controls:
 - `Weld Tolerance` — merges nearby network vertices in debug and strut output
 - `Min Edge Length` — drops tiny degenerate segments during cleanup
 - `Duplicate Edge Tol` — removes nearly identical segments during cleanup
+- `Relax Iterations` — optional Laplacian-style relaxation passes on the cleaned lattice network
+- `Relax Strength` — how strongly each relaxed lattice vertex moves toward its neighbors
 - `Strut Radius` — radius of each printable lattice tube
 - `Node Radius x` — expands node caps at welded junctions
 - `Strut Sides` — cylinder side count for printable struts
+- `Remesh Voxel` — explicit voxel size for printable strut cleanup; `0` keeps the automatic detail size
+- `Smooth Iterations` — extra post-remesh smoothing passes for printable struts
+- `Smooth Factor` — strength of each post-remesh smoothing pass
 
 Option 2: Run the included script directly in Blender
 1. Open Blender.
@@ -93,9 +98,14 @@ Option 2: Run the included script directly in Blender
    - `WELD_TOLERANCE`
    - `MINIMUM_EDGE_LENGTH`
    - `DUPLICATE_EDGE_TOLERANCE`
+   - `LATTICE_RELAX_ITERATIONS`
+   - `LATTICE_RELAX_STRENGTH`
    - `STRUT_RADIUS`
    - `NODE_RADIUS_MULTIPLIER`
    - `STRUT_SIDES`
+   - `STRUT_REMESH_VOXEL_SIZE`
+   - `STRUT_SMOOTH_ITERATIONS`
+   - `STRUT_SMOOTH_FACTOR`
    - `RANDOM_SEED`
    - `GAP`
    - `ATTEMPT_MULTIPLIER`
@@ -110,6 +120,8 @@ Recommended starting values:
 - more detailed breakup: `CELL_COUNT = 20 to 40`
 - visible gaps: `GAP = 0.05 to 0.12`
 - complex meshes: `ATTEMPT_MULTIPLIER = 80 to 150`
+- relaxed lattice preview: `LATTICE_RELAX_ITERATIONS = 3 to 6`, `LATTICE_RELAX_STRENGTH = 0.25 to 0.45`
+- printable struts: `STRUT_REMESH_VOXEL_SIZE = 0.0` for auto or `0.02 to 0.05` to tune detail, `STRUT_SMOOTH_ITERATIONS = 2 to 6`, `STRUT_SMOOTH_FACTOR = 0.25 to 0.45`
 
 If generation fails:
 - make sure the object is a closed mesh

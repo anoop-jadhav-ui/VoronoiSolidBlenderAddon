@@ -48,6 +48,14 @@ def boundary_edge_count(obj):
     return count
 
 
+def rounded_vertex_signature(obj, precision=4):
+    verts = []
+    for vertex in obj.data.vertices:
+        co = obj.matrix_world @ vertex.co
+        verts.append((round(co.x, precision), round(co.y, precision), round(co.z, precision)))
+    return tuple(sorted(verts))
+
+
 def surface_distance(obj, world_point, depsgraph):
     local_point = obj.matrix_world.inverted() @ world_point
     hit, location, _normal, _face_index = obj.closest_point_on_mesh(local_point, depsgraph=depsgraph)
@@ -95,7 +103,7 @@ def run_lattice_seed_case(kind):
     )
 
 
-def run_lattice_network_case(kind, output_mode):
+def run_lattice_network_case(kind, output_mode, *, relax_iterations=0, relax_strength=0.5):
     reset_scene()
 
     bpy.ops.mesh.primitive_uv_sphere_add(radius=1.25, segments=32, ring_count=16, location=(0, 0, 0))
@@ -117,6 +125,8 @@ def run_lattice_network_case(kind, output_mode):
     settings.weld_tolerance = 0.03
     settings.minimum_edge_length = 0.02
     settings.duplicate_edge_tolerance = 0.0005
+    settings.lattice_relax_iterations = relax_iterations
+    settings.lattice_relax_strength = relax_strength
 
     bpy.context.view_layer.objects.active = src
     src.select_set(True)
@@ -146,12 +156,15 @@ def run_lattice_network_case(kind, output_mode):
         "output_mode": output_mode,
         "vertices": len(mesh.vertices),
         "edges": len(mesh.edges),
+        "relax_iterations": relax_iterations,
+        "relax_strength": round(relax_strength, 3),
+        "vertex_signature": rounded_vertex_signature(target),
     }
-    results.append(summary)
+    results.append({k: v for k, v in summary.items() if k != "vertex_signature"})
     return summary
 
 
-def run_lattice_strut_case(kind):
+def run_lattice_strut_case(kind, *, remesh_voxel_size=0.0, smooth_iterations=4, smooth_factor=0.35):
     reset_scene()
 
     bpy.ops.mesh.primitive_uv_sphere_add(radius=1.25, segments=32, ring_count=16, location=(0, 0, 0))
@@ -176,6 +189,9 @@ def run_lattice_strut_case(kind):
     settings.strut_radius = 0.035
     settings.node_radius_multiplier = 1.35
     settings.strut_sides = 8
+    settings.strut_remesh_voxel_size = remesh_voxel_size
+    settings.strut_smooth_iterations = smooth_iterations
+    settings.strut_smooth_factor = smooth_factor
 
     bpy.context.view_layer.objects.active = src
     src.select_set(True)
@@ -225,6 +241,9 @@ def run_lattice_strut_case(kind):
         "faces": len(mesh.polygons),
         "boundary_edges": boundary_edges,
         "volume": round(volume, 6),
+        "remesh_voxel_size": round(remesh_voxel_size, 4),
+        "smooth_iterations": smooth_iterations,
+        "smooth_factor": round(smooth_factor, 3),
     }
     results.append(summary)
     return summary
@@ -304,11 +323,22 @@ voronoi_solid_addon.register()
 run_lattice_seed_case("sphere_lattice")
 raw_network = run_lattice_network_case("sphere_lattice_raw", 'RAW_EDGES')
 welded_network = run_lattice_network_case("sphere_lattice_welded", 'FINAL_NETWORK')
+relaxed_network = run_lattice_network_case("sphere_lattice_relaxed", 'FINAL_NETWORK', relax_iterations=4, relax_strength=0.35)
 if welded_network["edges"] >= raw_network["edges"]:
     raise RuntimeError(f"Expected welded network to remove duplicate edges: raw={raw_network}, welded={welded_network}")
 if welded_network["vertices"] >= raw_network["vertices"]:
     raise RuntimeError(f"Expected welded network to reduce vertex count: raw={raw_network}, welded={welded_network}")
-run_lattice_strut_case("sphere_lattice_struts")
+if relaxed_network["vertices"] <= 0 or relaxed_network["edges"] <= 0:
+    raise RuntimeError(f"Expected relaxed network to remain non-empty: relaxed={relaxed_network}")
+if relaxed_network["edges"] > welded_network["edges"] or relaxed_network["vertices"] > welded_network["vertices"]:
+    raise RuntimeError(f"Expected relaxed network cleanup to keep topology size stable or smaller: welded={welded_network}, relaxed={relaxed_network}")
+if relaxed_network["vertex_signature"] == welded_network["vertex_signature"]:
+    raise RuntimeError(f"Expected relaxed network geometry to change vertex positions: welded={welded_network}, relaxed={relaxed_network}")
+default_struts = run_lattice_strut_case("sphere_lattice_struts")
+coarse_struts = run_lattice_strut_case("sphere_lattice_struts_coarse", remesh_voxel_size=0.06, smooth_iterations=0)
+smoothed_struts = run_lattice_strut_case("sphere_lattice_struts_smoothed", remesh_voxel_size=0.03, smooth_iterations=6, smooth_factor=0.45)
+if coarse_struts["faces"] >= smoothed_struts["faces"]:
+    raise RuntimeError(f"Expected finer/smoothed strut cleanup to produce denser mesh detail: coarse={coarse_struts}, smoothed={smoothed_struts}")
 run_case("cube_default_joined", seed_count=8, gap=0.05)
 run_case("sphere", seed_count=10, gap=0.08)
 run_case("cube_joined", seed_count=8, gap=0.05, join_cells=True, apply_wireframe=True)
