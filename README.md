@@ -12,6 +12,7 @@ Files:
 
 What it does:
 - samples random points inside the selected solid
+- now includes a `Lattice Seeds` mode that biases seeds to a shallow shell near the mesh surface
 - computes a Voronoi-like clipped cell for each point
 - by default joins generated cells into one mesh object so modifiers affect the whole result
 - can optionally keep cells as separate mesh objects in a new collection
@@ -22,6 +23,7 @@ Current limitations:
 - this is a geometry prototype, not a polished production addon yet
 - performance drops as cell count rises because each cell is clipped against every other point
 - for very thin/complex shapes, increase `sample_attempt_multiplier`
+- `Lattice Seeds` is Iteration 1 only: it improves shell-oriented seeding but still outputs clipped Voronoi cells rather than a cleaned strut network
 
 Tested:
 - Blender 4.3.0
@@ -46,6 +48,7 @@ Option 1: Run as an installable addon in Blender
 6. Open the 3D View sidebar with `N`.
 7. Open the `Voronoi` tab.
 8. Set:
+   - `Mode`
    - `Cells`
    - `Random Seed`
    - `Gap`
@@ -53,6 +56,12 @@ Option 1: Run as an installable addon in Blender
    - `Collection`
    - `Join Cells` (enabled by default so one modifier affects the whole result)
 9. Click `Generate Voronoi Cells`.
+
+Lattice mode controls:
+- `Surface Seeds` — number of shell-oriented seeds near the source surface
+- `Interior Seeds` — optional extra seeds inside the volume
+- `Shell Depth` — max inward offset from the surface for shell seeds
+- `Shell Bias` — higher values keep seeds closer to the outer skin
 
 Option 2: Run the included script directly in Blender
 1. Open Blender.
@@ -62,7 +71,12 @@ Option 2: Run the included script directly in Blender
 5. Open this file:
    `/Users/anoopjadhav/Documents/vibeCodedProjects/VoronoiSolidBlenderAddon/run_selected_object.py`
 6. Adjust the values at the top if needed:
+   - `GENERATION_MODE`
    - `CELL_COUNT`
+   - `SURFACE_SEED_COUNT`
+   - `INTERIOR_SEED_COUNT`
+   - `SURFACE_SHELL_DEPTH`
+   - `SURFACE_SHELL_BIAS`
    - `RANDOM_SEED`
    - `GAP`
    - `ATTEMPT_MULTIPLIER`

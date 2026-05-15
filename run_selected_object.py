@@ -8,7 +8,12 @@ if PROJECT_DIR not in sys.path:
 import voronoi_solid_addon
 
 # Change these values before running if needed.
+GENERATION_MODE = 'SOLID'  # 'SOLID' or 'LATTICE'
 CELL_COUNT = 24
+SURFACE_SEED_COUNT = 24
+INTERIOR_SEED_COUNT = 6
+SURFACE_SHELL_DEPTH = 0.12
+SURFACE_SHELL_BIAS = 1.0
 RANDOM_SEED = 7
 GAP = 0.08
 ATTEMPT_MULTIPLIER = 100
@@ -27,7 +32,12 @@ if obj.mode != 'OBJECT':
     bpy.ops.object.mode_set(mode='OBJECT')
 
 settings = bpy.context.scene.voronoi_solid_settings
+settings.generation_mode = GENERATION_MODE
 settings.seed_count = CELL_COUNT
+settings.surface_seed_count = SURFACE_SEED_COUNT
+settings.interior_seed_count = INTERIOR_SEED_COUNT
+settings.surface_shell_depth = SURFACE_SHELL_DEPTH
+settings.surface_shell_bias = SURFACE_SHELL_BIAS
 settings.random_seed = RANDOM_SEED
 settings.gap = GAP
 settings.sample_attempt_multiplier = ATTEMPT_MULTIPLIER

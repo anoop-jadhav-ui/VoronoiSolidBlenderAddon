@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Voronoi Solid Pattern",
     "author": "Hermes Agent",
-    "version": (0, 1, 1),
+    "version": (0, 2, 0),
     "blender": (4, 3, 0),
     "location": "View3D > Sidebar > Voronoi",
     "description": "Generate Voronoi-style cells from any closed mesh solid",
@@ -12,7 +12,7 @@ import random
 
 import bpy
 import bmesh
-from bpy.props import BoolProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
 from bpy.types import Operator, Panel, PropertyGroup
 from mathutils import Matrix, Vector
 
@@ -21,12 +21,34 @@ EPSILON = 1e-6
 
 
 class VoronoiSolidSettings(PropertyGroup):
+    generation_mode: EnumProperty(
+        name="Mode",
+        items=(
+            ('SOLID', "Solid Cells", "Generate solid Voronoi cells throughout the volume"),
+            ('LATTICE', "Lattice Seeds", "Use shell-oriented surface-biased seeding for lattice development"),
+        ),
+        default='SOLID',
+    )
     seed_count: IntProperty(
         name="Cells",
         default=12,
         min=2,
         max=250,
         description="How many Voronoi cells to generate inside the selected solid",
+    )
+    surface_seed_count: IntProperty(
+        name="Surface Seeds",
+        default=18,
+        min=0,
+        max=500,
+        description="How many seeds to place near the surface shell in Lattice mode",
+    )
+    interior_seed_count: IntProperty(
+        name="Interior Seeds",
+        default=4,
+        min=0,
+        max=500,
+        description="How many additional interior seeds to mix into Lattice mode",
     )
     random_seed: IntProperty(
         name="Random Seed",
@@ -41,6 +63,21 @@ class VoronoiSolidSettings(PropertyGroup):
         max=0.95,
         subtype='FACTOR',
         description="Shrink each generated cell toward its site to create visible gaps",
+    )
+    surface_shell_depth: FloatProperty(
+        name="Shell Depth",
+        default=0.12,
+        min=0.0,
+        max=10.0,
+        description="How far surface seeds can move inward from the mesh surface in Lattice mode",
+    )
+    surface_shell_bias: FloatProperty(
+        name="Shell Bias",
+        default=1.0,
+        min=0.0,
+        max=1.0,
+        subtype='FACTOR',
+        description="Higher values keep lattice surface seeds closer to the outer shell",
     )
     sample_attempt_multiplier: IntProperty(
         name="Sample Attempts x",
@@ -96,19 +133,15 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
             return {'CANCELLED'}
 
         try:
-            seeds = sample_points_inside_object(
-                source_obj,
-                settings.seed_count,
-                settings.random_seed,
-                settings.sample_attempt_multiplier,
-                depsgraph,
-            )
+            seeds = generate_seed_points(source_obj, settings, depsgraph)
         except RuntimeError as exc:
             source_bm.free()
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
 
         target_collection = ensure_unique_collection(context.scene.collection, settings.collection_name or f"{source_obj.name}_Voronoi")
+        target_collection["voronoi_generation_mode"] = settings.generation_mode
+        target_collection["voronoi_seed_count"] = len(seeds)
 
         created = 0
         created_objects = []
@@ -129,6 +162,7 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
 
             obj = bpy.data.objects.new(mesh.name, mesh)
             obj.matrix_world = Matrix.Identity(4)
+            obj["voronoi_generation_mode"] = settings.generation_mode
             target_collection.objects.link(obj)
             created += 1
             created_objects.append(obj)
@@ -143,6 +177,7 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
         if settings.join_cells and created_objects:
             joined_object = join_objects(context, created_objects, f"{source_obj.name}_voronoi")
             if joined_object is not None:
+                joined_object["voronoi_generation_mode"] = settings.generation_mode
                 created = 1
 
         if not settings.keep_original:
@@ -167,7 +202,16 @@ class VIEW3D_PT_voronoi_solid_panel(Panel):
 
         col = layout.column(align=True)
         col.label(text=f"Active: {obj.name if obj else 'None'}")
-        col.prop(settings, "seed_count")
+        col.prop(settings, "generation_mode")
+
+        if settings.generation_mode == 'SOLID':
+            col.prop(settings, "seed_count")
+        else:
+            col.prop(settings, "surface_seed_count")
+            col.prop(settings, "interior_seed_count")
+            col.prop(settings, "surface_shell_depth")
+            col.prop(settings, "surface_shell_bias")
+
         col.prop(settings, "random_seed")
         col.prop(settings, "gap")
         col.prop(settings, "sample_attempt_multiplier")
@@ -190,6 +234,43 @@ def build_world_bmesh(obj, depsgraph):
     bm.normal_update()
     obj_eval.to_mesh_clear()
     return bm
+
+
+def generate_seed_points(obj, settings, depsgraph):
+    if settings.generation_mode == 'LATTICE':
+        seeds = []
+        if settings.surface_seed_count > 0:
+            seeds.extend(
+                sample_points_on_surface_shell(
+                    obj,
+                    settings.surface_seed_count,
+                    settings.random_seed,
+                    settings.surface_shell_depth,
+                    settings.surface_shell_bias,
+                    depsgraph,
+                )
+            )
+        if settings.interior_seed_count > 0:
+            seeds.extend(
+                sample_points_inside_object(
+                    obj,
+                    settings.interior_seed_count,
+                    settings.random_seed + 7919,
+                    settings.sample_attempt_multiplier,
+                    depsgraph,
+                )
+            )
+        if not seeds:
+            raise RuntimeError("Lattice mode needs at least one surface or interior seed")
+        return seeds
+
+    return sample_points_inside_object(
+        obj,
+        settings.seed_count,
+        settings.random_seed,
+        settings.sample_attempt_multiplier,
+        depsgraph,
+    )
 
 
 def sample_points_inside_object(obj, target_count, random_seed, attempt_multiplier, depsgraph):
@@ -230,6 +311,110 @@ def sample_points_inside_object(obj, target_count, random_seed, attempt_multipli
         )
 
     return seeds
+
+
+def sample_points_on_surface_shell(obj, target_count, random_seed, shell_depth, shell_bias, depsgraph):
+    triangles = get_surface_triangles(obj, depsgraph)
+    if not triangles:
+        raise RuntimeError("Could not extract surface triangles for lattice seeding")
+
+    rng = random.Random(random_seed)
+    total_area = sum(triangle[3] for triangle in triangles)
+    if total_area <= EPSILON:
+        raise RuntimeError("Surface triangle area is too small for lattice seeding")
+
+    cumulative = []
+    running = 0.0
+    for triangle in triangles:
+        running += triangle[3]
+        cumulative.append(running)
+
+    seeds = []
+    attempts = max(target_count * 10, target_count)
+    exponent = 1.0 + max(0.0, min(1.0, shell_bias)) * 4.0
+
+    for _ in range(attempts):
+        if len(seeds) >= target_count:
+            break
+
+        triangle = pick_triangle(triangles, cumulative, running, rng)
+        surface_point = random_point_on_triangle(triangle[0], triangle[1], triangle[2], rng)
+        normal = triangle[4]
+
+        if shell_depth <= EPSILON:
+            candidate = surface_point
+        else:
+            offset_distance = shell_depth * (rng.random() ** exponent)
+            candidate = project_point_inside_shell(obj, surface_point, normal, offset_distance, depsgraph)
+            if candidate is None:
+                continue
+
+        if not point_is_inside_object(obj, candidate, depsgraph):
+            continue
+        seeds.append(candidate)
+
+    if len(seeds) < target_count:
+        raise RuntimeError(
+            f"Only found {len(seeds)} surface shell points out of {target_count}. Reduce shell depth or use a cleaner closed mesh."
+        )
+
+    return seeds
+
+
+def get_surface_triangles(obj, depsgraph):
+    obj_eval = obj.evaluated_get(depsgraph)
+    mesh = obj_eval.to_mesh(preserve_all_data_layers=False, depsgraph=depsgraph)
+    if mesh is None:
+        return []
+
+    mesh.calc_loop_triangles()
+    triangles = []
+    try:
+        for loop_triangle in mesh.loop_triangles:
+            a = obj.matrix_world @ mesh.vertices[loop_triangle.vertices[0]].co
+            b = obj.matrix_world @ mesh.vertices[loop_triangle.vertices[1]].co
+            c = obj.matrix_world @ mesh.vertices[loop_triangle.vertices[2]].co
+            cross = (b - a).cross(c - a)
+            area = cross.length * 0.5
+            if area <= EPSILON:
+                continue
+            normal = cross.normalized()
+            triangles.append((a, b, c, area, normal))
+    finally:
+        obj_eval.to_mesh_clear()
+
+    return triangles
+
+
+def pick_triangle(triangles, cumulative, total_area, rng):
+    target = rng.uniform(0.0, total_area)
+    for index, threshold in enumerate(cumulative):
+        if target <= threshold:
+            return triangles[index]
+    return triangles[-1]
+
+
+def random_point_on_triangle(a, b, c, rng):
+    u = rng.random()
+    v = rng.random()
+    if u + v > 1.0:
+        u = 1.0 - u
+        v = 1.0 - v
+    return a + (b - a) * u + (c - a) * v
+
+
+def project_point_inside_shell(obj, surface_point, normal, offset_distance, depsgraph):
+    inward = surface_point - normal * offset_distance
+    if point_is_inside_object(obj, inward, depsgraph):
+        return inward
+
+    outward = surface_point + normal * offset_distance
+    if point_is_inside_object(obj, outward, depsgraph):
+        return outward
+
+    if point_is_inside_object(obj, surface_point, depsgraph):
+        return surface_point
+    return None
 
 
 def point_is_inside_object(obj, world_point, depsgraph):

@@ -40,6 +40,53 @@ def object_volume(obj):
     return volume
 
 
+def surface_distance(obj, world_point, depsgraph):
+    local_point = obj.matrix_world.inverted() @ world_point
+    hit, location, _normal, _face_index = obj.closest_point_on_mesh(local_point, depsgraph=depsgraph)
+    if not hit:
+        raise RuntimeError(f"Could not project point to mesh surface for {obj.name}")
+    closest_world = obj.matrix_world @ location
+    return (world_point - closest_world).length
+
+
+def run_lattice_seed_case(kind):
+    reset_scene()
+
+    if kind != "sphere_lattice":
+        raise ValueError(kind)
+
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=1.25, segments=32, ring_count=16, location=(0, 0, 0))
+    src = bpy.context.active_object
+
+    settings = bpy.context.scene.voronoi_solid_settings
+    settings.generation_mode = 'LATTICE'
+    settings.surface_seed_count = 10
+    settings.interior_seed_count = 2
+    settings.surface_shell_depth = 0.12
+    settings.surface_shell_bias = 1.0
+    settings.random_seed = 11
+    settings.sample_attempt_multiplier = 100
+
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    seeds = voronoi_solid_addon.generate_seed_points(src, settings, depsgraph)
+    if len(seeds) != 12:
+        raise RuntimeError(f"Expected 12 lattice seeds, got {len(seeds)}")
+
+    near_surface = [surface_distance(src, seed, depsgraph) for seed in seeds[:settings.surface_seed_count]]
+    if any(distance > settings.surface_shell_depth * 1.35 for distance in near_surface):
+        raise RuntimeError(f"Surface lattice seeds were not kept near the shell depth: {near_surface}")
+
+    results.append(
+        {
+            "case": kind,
+            "seed_count": len(seeds),
+            "surface_seed_count": settings.surface_seed_count,
+            "interior_seed_count": settings.interior_seed_count,
+            "max_surface_distance": round(max(near_surface), 6),
+        }
+    )
+
+
 def run_case(kind, seed_count, gap, join_cells=None, apply_wireframe=False):
     reset_scene()
 
@@ -53,6 +100,7 @@ def run_case(kind, seed_count, gap, join_cells=None, apply_wireframe=False):
         raise ValueError(kind)
 
     settings = bpy.context.scene.voronoi_solid_settings
+    settings.generation_mode = 'SOLID'
     settings.seed_count = seed_count
     settings.random_seed = 7
     settings.gap = gap
@@ -111,6 +159,7 @@ def run_case(kind, seed_count, gap, join_cells=None, apply_wireframe=False):
 
 
 voronoi_solid_addon.register()
+run_lattice_seed_case("sphere_lattice")
 run_case("cube_default_joined", seed_count=8, gap=0.05)
 run_case("sphere", seed_count=10, gap=0.08)
 run_case("cube_joined", seed_count=8, gap=0.05, join_cells=True, apply_wireframe=True)
