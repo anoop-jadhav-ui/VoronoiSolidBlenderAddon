@@ -12,7 +12,8 @@ Files:
 
 What it does:
 - samples random points inside the selected solid
-- now includes a `Lattice Seeds` mode that biases seeds to a shallow shell near the mesh surface
+- includes a `Lattice` mode that biases seeds to a shallow shell near the mesh surface
+- can output either clipped Voronoi cells, raw extracted lattice edges, or a welded/deduplicated debug edge network
 - computes a Voronoi-like clipped cell for each point
 - by default joins generated cells into one mesh object so modifiers affect the whole result
 - can optionally keep cells as separate mesh objects in a new collection
@@ -23,7 +24,7 @@ Current limitations:
 - this is a geometry prototype, not a polished production addon yet
 - performance drops as cell count rises because each cell is clipped against every other point
 - for very thin/complex shapes, increase `sample_attempt_multiplier`
-- `Lattice Seeds` is Iteration 1 only: it improves shell-oriented seeding but still outputs clipped Voronoi cells rather than a cleaned strut network
+- `Final Network` is Iteration 2 only: it creates a debug-ready welded edge network, but it does not yet generate printable struts or smoothing like the Grasshopper/Rhino reference
 
 Tested:
 - Blender 4.3.0
@@ -62,6 +63,13 @@ Lattice mode controls:
 - `Interior Seeds` — optional extra seeds inside the volume
 - `Shell Depth` — max inward offset from the surface for shell seeds
 - `Shell Bias` — higher values keep seeds closer to the outer skin
+- `Lattice Output`
+  - `Cells` — clipped Voronoi cells
+  - `Raw Edges` — extracted edge network before cleanup
+  - `Final Network` — welded/deduplicated debug network
+- `Weld Tolerance` — merges nearby network vertices in debug network output
+- `Min Edge Length` — drops tiny degenerate segments during cleanup
+- `Duplicate Edge Tol` — removes nearly identical segments during cleanup
 
 Option 2: Run the included script directly in Blender
 1. Open Blender.
@@ -72,11 +80,15 @@ Option 2: Run the included script directly in Blender
    `/Users/anoopjadhav/Documents/vibeCodedProjects/VoronoiSolidBlenderAddon/run_selected_object.py`
 6. Adjust the values at the top if needed:
    - `GENERATION_MODE`
+   - `LATTICE_OUTPUT_MODE`
    - `CELL_COUNT`
    - `SURFACE_SEED_COUNT`
    - `INTERIOR_SEED_COUNT`
    - `SURFACE_SHELL_DEPTH`
    - `SURFACE_SHELL_BIAS`
+   - `WELD_TOLERANCE`
+   - `MINIMUM_EDGE_LENGTH`
+   - `DUPLICATE_EDGE_TOLERANCE`
    - `RANDOM_SEED`
    - `GAP`
    - `ATTEMPT_MULTIPLIER`

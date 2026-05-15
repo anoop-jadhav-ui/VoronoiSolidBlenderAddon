@@ -50,6 +50,15 @@ class VoronoiSolidSettings(PropertyGroup):
         max=500,
         description="How many additional interior seeds to mix into Lattice mode",
     )
+    lattice_output_mode: EnumProperty(
+        name="Lattice Output",
+        items=(
+            ('CELLS', "Cells", "Keep the clipped Voronoi cell meshes"),
+            ('RAW_EDGES', "Raw Edges", "Output the raw extracted edge network before cleanup"),
+            ('FINAL_NETWORK', "Final Network", "Output a welded and deduplicated edge network for lattice development"),
+        ),
+        default='CELLS',
+    )
     random_seed: IntProperty(
         name="Random Seed",
         default=1,
@@ -78,6 +87,27 @@ class VoronoiSolidSettings(PropertyGroup):
         max=1.0,
         subtype='FACTOR',
         description="Higher values keep lattice surface seeds closer to the outer shell",
+    )
+    weld_tolerance: FloatProperty(
+        name="Weld Tolerance",
+        default=0.02,
+        min=0.0,
+        max=1.0,
+        description="Merge nearby network vertices within this distance in Lattice network modes",
+    )
+    minimum_edge_length: FloatProperty(
+        name="Min Edge Length",
+        default=0.01,
+        min=0.0,
+        max=10.0,
+        description="Discard lattice edge segments shorter than this length during cleanup",
+    )
+    duplicate_edge_tolerance: FloatProperty(
+        name="Duplicate Edge Tol",
+        default=0.0005,
+        min=0.0,
+        max=1.0,
+        description="Treat nearly identical lattice segments as duplicates within this tolerance",
     )
     sample_attempt_multiplier: IntProperty(
         name="Sample Attempts x",
@@ -174,7 +204,20 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
             self.report({'ERROR'}, "No Voronoi cells were generated")
             return {'CANCELLED'}
 
-        if settings.join_cells and created_objects:
+        if settings.generation_mode == 'LATTICE' and settings.lattice_output_mode != 'CELLS':
+            debug_object = build_lattice_network_object(
+                target_collection,
+                created_objects,
+                source_obj.name,
+                settings.lattice_output_mode,
+                settings.weld_tolerance,
+                settings.minimum_edge_length,
+                settings.duplicate_edge_tolerance,
+            )
+            cleanup_generated_objects(created_objects)
+            created_objects = [debug_object]
+            created = 1
+        elif settings.join_cells and created_objects:
             joined_object = join_objects(context, created_objects, f"{source_obj.name}_voronoi")
             if joined_object is not None:
                 joined_object["voronoi_generation_mode"] = settings.generation_mode
@@ -211,6 +254,11 @@ class VIEW3D_PT_voronoi_solid_panel(Panel):
             col.prop(settings, "interior_seed_count")
             col.prop(settings, "surface_shell_depth")
             col.prop(settings, "surface_shell_bias")
+            col.prop(settings, "lattice_output_mode")
+            if settings.lattice_output_mode != 'CELLS':
+                col.prop(settings, "weld_tolerance")
+                col.prop(settings, "minimum_edge_length")
+                col.prop(settings, "duplicate_edge_tolerance")
 
         col.prop(settings, "random_seed")
         col.prop(settings, "gap")
@@ -494,6 +542,163 @@ def shrink_cell(bm, center, gap):
     for vert in bm.verts:
         vert.co = center + (vert.co - center) * scale
     bm.normal_update()
+
+
+def build_lattice_network_object(collection, cell_objects, source_name, output_mode, weld_tolerance, minimum_edge_length, duplicate_edge_tolerance):
+    raw_segments = extract_edge_segments(cell_objects)
+    if output_mode == 'RAW_EDGES':
+        segments = [segment for segment in raw_segments if segment_length(segment) >= max(minimum_edge_length, EPSILON)]
+        unique_vertices = False
+    else:
+        segments = clean_edge_segments(raw_segments, weld_tolerance, minimum_edge_length, duplicate_edge_tolerance)
+        unique_vertices = True
+
+    if not segments:
+        raise RuntimeError("No lattice edge segments remained after extraction/cleanup")
+
+    object_name = f"{source_name}_{output_mode.lower()}"
+    mesh = bpy.data.meshes.new(f"{object_name}_mesh")
+    vertices, edges = build_edge_mesh_data(segments, unique_vertices, weld_tolerance)
+    mesh.from_pydata(vertices, edges, [])
+    mesh.update()
+
+    obj = bpy.data.objects.new(object_name, mesh)
+    obj.matrix_world = Matrix.Identity(4)
+    obj["voronoi_generation_mode"] = 'LATTICE'
+    obj["voronoi_lattice_output_mode"] = output_mode
+    collection.objects.link(obj)
+    return obj
+
+
+def extract_edge_segments(objects):
+    segments = []
+    for obj in objects:
+        if obj is None or obj.type != 'MESH' or obj.data is None:
+            continue
+        mesh = obj.data
+        for edge in mesh.edges:
+            start = obj.matrix_world @ mesh.vertices[edge.vertices[0]].co
+            end = obj.matrix_world @ mesh.vertices[edge.vertices[1]].co
+            if (end - start).length <= EPSILON:
+                continue
+            segments.append((start.copy(), end.copy()))
+    return segments
+
+
+def clean_edge_segments(raw_segments, weld_tolerance, minimum_edge_length, duplicate_edge_tolerance):
+    filtered = []
+    seen_duplicates = set()
+    duplicate_tol = max(duplicate_edge_tolerance, EPSILON)
+
+    for start, end in raw_segments:
+        if (end - start).length < max(minimum_edge_length, EPSILON):
+            continue
+        duplicate_key = canonical_segment_key(start, end, duplicate_tol)
+        if duplicate_key[0] == duplicate_key[1] or duplicate_key in seen_duplicates:
+            continue
+        seen_duplicates.add(duplicate_key)
+        filtered.append((start, end))
+
+    if not filtered:
+        return []
+
+    welded_points = build_welded_point_map(filtered, max(weld_tolerance, EPSILON))
+    final_segments = []
+    seen_final = set()
+    final_tolerance = max(weld_tolerance, duplicate_tol, EPSILON)
+
+    for start, end in filtered:
+        welded_start = welded_points[quantize_vector(start, max(weld_tolerance, EPSILON))]
+        welded_end = welded_points[quantize_vector(end, max(weld_tolerance, EPSILON))]
+        if (welded_end - welded_start).length < max(minimum_edge_length, EPSILON):
+            continue
+        final_key = canonical_segment_key(welded_start, welded_end, final_tolerance)
+        if final_key[0] == final_key[1] or final_key in seen_final:
+            continue
+        seen_final.add(final_key)
+        final_segments.append((welded_start.copy(), welded_end.copy()))
+
+    return final_segments
+
+
+def build_welded_point_map(segments, tolerance):
+    buckets = {}
+    for start, end in segments:
+        start_key = quantize_vector(start, tolerance)
+        end_key = quantize_vector(end, tolerance)
+        buckets.setdefault(start_key, []).append(start)
+        buckets.setdefault(end_key, []).append(end)
+
+    welded = {}
+    for key, points in buckets.items():
+        total = Vector((0.0, 0.0, 0.0))
+        for point in points:
+            total += point
+        welded[key] = total / len(points)
+    return welded
+
+
+def build_edge_mesh_data(segments, unique_vertices, tolerance):
+    vertices = []
+    edges = []
+
+    if not unique_vertices:
+        for start, end in segments:
+            index = len(vertices)
+            vertices.append(tuple(start))
+            vertices.append(tuple(end))
+            edges.append((index, index + 1))
+        return vertices, edges
+
+    index_by_key = {}
+    for start, end in segments:
+        start_index = get_or_create_vertex_index(vertices, index_by_key, start, tolerance)
+        end_index = get_or_create_vertex_index(vertices, index_by_key, end, tolerance)
+        if start_index == end_index:
+            continue
+        edges.append((start_index, end_index))
+    return vertices, edges
+
+
+def get_or_create_vertex_index(vertices, index_by_key, point, tolerance):
+    key = quantize_vector(point, max(tolerance, EPSILON))
+    if key in index_by_key:
+        return index_by_key[key]
+    index = len(vertices)
+    vertices.append(tuple(point))
+    index_by_key[key] = index
+    return index
+
+
+def quantize_vector(point, tolerance):
+    scale = max(tolerance, EPSILON)
+    return (
+        int(round(point.x / scale)),
+        int(round(point.y / scale)),
+        int(round(point.z / scale)),
+    )
+
+
+def canonical_segment_key(start, end, tolerance):
+    start_key = quantize_vector(start, tolerance)
+    end_key = quantize_vector(end, tolerance)
+    if start_key <= end_key:
+        return start_key, end_key
+    return end_key, start_key
+
+
+def segment_length(segment):
+    return (segment[1] - segment[0]).length
+
+
+def cleanup_generated_objects(objects):
+    for obj in objects:
+        if obj is None or obj.name not in bpy.data.objects:
+            continue
+        mesh = obj.data if obj.type == 'MESH' else None
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if mesh is not None and mesh.users == 0:
+            bpy.data.meshes.remove(mesh)
 
 
 def ensure_unique_collection(parent_collection, base_name):

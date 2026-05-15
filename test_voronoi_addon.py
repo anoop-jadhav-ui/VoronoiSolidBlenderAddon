@@ -87,6 +87,62 @@ def run_lattice_seed_case(kind):
     )
 
 
+def run_lattice_network_case(kind, output_mode):
+    reset_scene()
+
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=1.25, segments=32, ring_count=16, location=(0, 0, 0))
+    src = bpy.context.active_object
+
+    settings = bpy.context.scene.voronoi_solid_settings
+    settings.generation_mode = 'LATTICE'
+    settings.lattice_output_mode = output_mode
+    settings.surface_seed_count = 10
+    settings.interior_seed_count = 2
+    settings.surface_shell_depth = 0.12
+    settings.surface_shell_bias = 1.0
+    settings.random_seed = 11
+    settings.gap = 0.0
+    settings.sample_attempt_multiplier = 100
+    settings.keep_original = True
+    settings.collection_name = f"{kind}_cells"
+    settings.join_cells = True
+    settings.weld_tolerance = 0.03
+    settings.minimum_edge_length = 0.02
+    settings.duplicate_edge_tolerance = 0.0005
+
+    bpy.context.view_layer.objects.active = src
+    src.select_set(True)
+
+    result = bpy.ops.object.generate_voronoi_solid_cells()
+    if 'FINISHED' not in result:
+        raise RuntimeError(f"Operator failed for {kind}: {result}")
+
+    generated = [c for c in bpy.data.collections if c.name.startswith(settings.collection_name)]
+    if not generated:
+        raise RuntimeError(f"No collection created for {kind}")
+
+    collection = max(generated, key=lambda c: len(c.objects))
+    mesh_objects = [obj for obj in collection.objects if obj.type == 'MESH']
+    if len(mesh_objects) != 1:
+        raise RuntimeError(f"Expected one debug edge object for {kind}, got {len(mesh_objects)}")
+
+    target = mesh_objects[0]
+    mesh = target.data
+    if len(mesh.polygons) != 0:
+        raise RuntimeError(f"Expected edge-only debug mesh for {kind}, found {len(mesh.polygons)} faces")
+    if len(mesh.edges) == 0:
+        raise RuntimeError(f"Expected extracted edges for {kind}, found none")
+
+    summary = {
+        "case": kind,
+        "output_mode": output_mode,
+        "vertices": len(mesh.vertices),
+        "edges": len(mesh.edges),
+    }
+    results.append(summary)
+    return summary
+
+
 def run_case(kind, seed_count, gap, join_cells=None, apply_wireframe=False):
     reset_scene()
 
@@ -157,9 +213,14 @@ def run_case(kind, seed_count, gap, join_cells=None, apply_wireframe=False):
         }
     )
 
-
 voronoi_solid_addon.register()
 run_lattice_seed_case("sphere_lattice")
+raw_network = run_lattice_network_case("sphere_lattice_raw", 'RAW_EDGES')
+welded_network = run_lattice_network_case("sphere_lattice_welded", 'FINAL_NETWORK')
+if welded_network["edges"] >= raw_network["edges"]:
+    raise RuntimeError(f"Expected welded network to remove duplicate edges: raw={raw_network}, welded={welded_network}")
+if welded_network["vertices"] >= raw_network["vertices"]:
+    raise RuntimeError(f"Expected welded network to reduce vertex count: raw={raw_network}, welded={welded_network}")
 run_case("cube_default_joined", seed_count=8, gap=0.05)
 run_case("sphere", seed_count=10, gap=0.08)
 run_case("cube_joined", seed_count=8, gap=0.05, join_cells=True, apply_wireframe=True)

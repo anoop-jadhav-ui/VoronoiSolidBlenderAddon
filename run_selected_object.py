@@ -9,11 +9,15 @@ import voronoi_solid_addon
 
 # Change these values before running if needed.
 GENERATION_MODE = 'SOLID'  # 'SOLID' or 'LATTICE'
+LATTICE_OUTPUT_MODE = 'CELLS'  # 'CELLS', 'RAW_EDGES', or 'FINAL_NETWORK'
 CELL_COUNT = 24
 SURFACE_SEED_COUNT = 24
 INTERIOR_SEED_COUNT = 6
 SURFACE_SHELL_DEPTH = 0.12
 SURFACE_SHELL_BIAS = 1.0
+WELD_TOLERANCE = 0.02
+MINIMUM_EDGE_LENGTH = 0.01
+DUPLICATE_EDGE_TOLERANCE = 0.0005
 RANDOM_SEED = 7
 GAP = 0.08
 ATTEMPT_MULTIPLIER = 100
@@ -33,11 +37,15 @@ if obj.mode != 'OBJECT':
 
 settings = bpy.context.scene.voronoi_solid_settings
 settings.generation_mode = GENERATION_MODE
+settings.lattice_output_mode = LATTICE_OUTPUT_MODE
 settings.seed_count = CELL_COUNT
 settings.surface_seed_count = SURFACE_SEED_COUNT
 settings.interior_seed_count = INTERIOR_SEED_COUNT
 settings.surface_shell_depth = SURFACE_SHELL_DEPTH
 settings.surface_shell_bias = SURFACE_SHELL_BIAS
+settings.weld_tolerance = WELD_TOLERANCE
+settings.minimum_edge_length = MINIMUM_EDGE_LENGTH
+settings.duplicate_edge_tolerance = DUPLICATE_EDGE_TOLERANCE
 settings.random_seed = RANDOM_SEED
 settings.gap = GAP
 settings.sample_attempt_multiplier = ATTEMPT_MULTIPLIER
