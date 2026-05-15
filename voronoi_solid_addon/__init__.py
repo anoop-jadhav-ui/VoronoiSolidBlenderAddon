@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Voronoi Solid Pattern",
     "author": "Hermes Agent",
-    "version": (0, 3, 0),
+    "version": (0, 4, 0),
     "blender": (4, 3, 0),
     "location": "View3D > Sidebar > Voronoi",
     "description": "Generate Voronoi-style cells from any closed mesh solid",
@@ -629,6 +629,26 @@ def build_lattice_strut_object(collection, source_name, segments, weld_tolerance
         )
 
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=max(weld_tolerance, safe_radius * 0.25, EPSILON))
+    for _ in range(4):
+        boundary_edges = [edge for edge in bm.edges if edge.is_valid and edge.is_boundary]
+        if not boundary_edges:
+            break
+        try:
+            bmesh.ops.holes_fill(bm, edges=boundary_edges, sides=0)
+        except RuntimeError:
+            pass
+        boundary_edges = [edge for edge in bm.edges if edge.is_valid and edge.is_boundary]
+        if not boundary_edges:
+            break
+        try:
+            bmesh.ops.triangle_fill(bm, edges=boundary_edges)
+        except RuntimeError:
+            pass
+        tiny_boundary_edges = find_small_boundary_components(bm, max_edges=2)
+        if not tiny_boundary_edges:
+            break
+        bmesh.ops.delete(bm, geom=tiny_boundary_edges, context='EDGES_FACES')
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=max(weld_tolerance, safe_radius * 0.25, EPSILON))
     delete_loose_geometry(bm)
     try:
         bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
@@ -646,7 +666,32 @@ def build_lattice_strut_object(collection, source_name, segments, weld_tolerance
     obj["voronoi_generation_mode"] = 'LATTICE'
     obj["voronoi_lattice_output_mode"] = 'STRUTS'
     collection.objects.link(obj)
+    voxel_remesh_object(obj, max(safe_radius * 0.8, weld_tolerance * 0.75, 0.01))
     return obj
+
+
+def voxel_remesh_object(obj, voxel_size):
+    modifier = obj.modifiers.new(name="VoronoiStrutRemesh", type='REMESH')
+    modifier.mode = 'VOXEL'
+    modifier.voxel_size = max(voxel_size, 0.001)
+    modifier.adaptivity = 0.0
+    modifier.use_remove_disconnected = False
+
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = obj.evaluated_get(depsgraph)
+    remeshed = bpy.data.meshes.new_from_object(evaluated, depsgraph=depsgraph)
+    obj.modifiers.remove(modifier)
+
+    if remeshed is None or len(remeshed.vertices) == 0:
+        if remeshed is not None and remeshed.users == 0:
+            bpy.data.meshes.remove(remeshed)
+        return
+
+    old_mesh = obj.data
+    obj.data = remeshed
+    obj.data.update()
+    if old_mesh is not None and old_mesh.users == 0:
+        bpy.data.meshes.remove(old_mesh)
 
 
 def append_cylinder_segment(bm, start, end, radius, sides):
@@ -678,6 +723,33 @@ def unique_segment_points(segments, tolerance):
         points.setdefault(start_key, start)
         points.setdefault(end_key, end)
     return [point.copy() for point in points.values()]
+
+
+def find_small_boundary_components(bm, max_edges):
+    boundary_edges = [edge for edge in bm.edges if edge.is_valid and edge.is_boundary]
+    if not boundary_edges:
+        return []
+
+    visited = set()
+    tiny_edges = []
+    for edge in boundary_edges:
+        if edge in visited:
+            continue
+        stack = [edge]
+        component = []
+        while stack:
+            current = stack.pop()
+            if current in visited or not current.is_valid or not current.is_boundary:
+                continue
+            visited.add(current)
+            component.append(current)
+            for vert in current.verts:
+                for linked in vert.link_edges:
+                    if linked.is_valid and linked.is_boundary and linked not in visited:
+                        stack.append(linked)
+        if 0 < len(component) <= max_edges:
+            tiny_edges.extend(component)
+    return tiny_edges
 
 
 def extract_edge_segments(objects):

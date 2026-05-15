@@ -24,7 +24,7 @@ Current limitations:
 - this is a geometry prototype, not a polished production addon yet
 - performance drops as cell count rises because each cell is clipped against every other point
 - for very thin/complex shapes, increase `sample_attempt_multiplier`
-- `Struts` is Iteration 3 only: it creates a printable joined lattice mesh, but smoothing/relaxation and boundary cleanup are still pending
+- `Struts` now performs an Iteration 4 cleanup pass with voxel remesh smoothing to produce a watertight printable lattice mesh; deeper network relaxation/tuning is still pending
 
 Tested:
 - Blender 4.3.0

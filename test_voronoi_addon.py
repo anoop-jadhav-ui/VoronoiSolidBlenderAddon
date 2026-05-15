@@ -40,6 +40,14 @@ def object_volume(obj):
     return volume
 
 
+def boundary_edge_count(obj):
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    count = sum(1 for edge in bm.edges if edge.is_boundary)
+    bm.free()
+    return count
+
+
 def surface_distance(obj, world_point, depsgraph):
     local_point = obj.matrix_world.inverted() @ world_point
     hit, location, _normal, _face_index = obj.closest_point_on_mesh(local_point, depsgraph=depsgraph)
@@ -194,6 +202,10 @@ def run_lattice_strut_case(kind):
     if volume <= 0.0:
         raise RuntimeError(f"Expected positive printable lattice volume for {kind}, got {volume}")
 
+    boundary_edges = boundary_edge_count(target)
+    if boundary_edges != 0:
+        raise RuntimeError(f"Expected watertight printable lattice mesh for {kind}, found {boundary_edges} boundary edges")
+
     mod = target.modifiers.new(name="SubdivisionTest", type='SUBSURF')
     mod.levels = 1
     depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -211,6 +223,7 @@ def run_lattice_strut_case(kind):
         "vertices": len(mesh.vertices),
         "edges": len(mesh.edges),
         "faces": len(mesh.polygons),
+        "boundary_edges": boundary_edges,
         "volume": round(volume, 6),
     }
     results.append(summary)
