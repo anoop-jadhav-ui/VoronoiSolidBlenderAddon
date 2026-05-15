@@ -143,6 +143,80 @@ def run_lattice_network_case(kind, output_mode):
     return summary
 
 
+def run_lattice_strut_case(kind):
+    reset_scene()
+
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=1.25, segments=32, ring_count=16, location=(0, 0, 0))
+    src = bpy.context.active_object
+
+    settings = bpy.context.scene.voronoi_solid_settings
+    settings.generation_mode = 'LATTICE'
+    settings.lattice_output_mode = 'STRUTS'
+    settings.surface_seed_count = 10
+    settings.interior_seed_count = 2
+    settings.surface_shell_depth = 0.12
+    settings.surface_shell_bias = 1.0
+    settings.random_seed = 11
+    settings.gap = 0.0
+    settings.sample_attempt_multiplier = 100
+    settings.keep_original = True
+    settings.collection_name = f"{kind}_cells"
+    settings.join_cells = True
+    settings.weld_tolerance = 0.03
+    settings.minimum_edge_length = 0.02
+    settings.duplicate_edge_tolerance = 0.0005
+    settings.strut_radius = 0.035
+    settings.node_radius_multiplier = 1.35
+    settings.strut_sides = 8
+
+    bpy.context.view_layer.objects.active = src
+    src.select_set(True)
+
+    result = bpy.ops.object.generate_voronoi_solid_cells()
+    if 'FINISHED' not in result:
+        raise RuntimeError(f"Operator failed for {kind}: {result}")
+
+    generated = [c for c in bpy.data.collections if c.name.startswith(settings.collection_name)]
+    if not generated:
+        raise RuntimeError(f"No collection created for {kind}")
+
+    collection = max(generated, key=lambda c: len(c.objects))
+    mesh_objects = [obj for obj in collection.objects if obj.type == 'MESH']
+    if len(mesh_objects) != 1:
+        raise RuntimeError(f"Expected one printable strut mesh for {kind}, got {len(mesh_objects)}")
+
+    target = mesh_objects[0]
+    mesh = target.data
+    if len(mesh.polygons) == 0:
+        raise RuntimeError(f"Expected printable lattice mesh with faces for {kind}, found none")
+
+    volume = object_volume(target)
+    if volume <= 0.0:
+        raise RuntimeError(f"Expected positive printable lattice volume for {kind}, got {volume}")
+
+    mod = target.modifiers.new(name="SubdivisionTest", type='SUBSURF')
+    mod.levels = 1
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = target.evaluated_get(depsgraph)
+    temp_mesh = bpy.data.meshes.new_from_object(evaluated, depsgraph=depsgraph)
+    try:
+        if len(temp_mesh.vertices) == 0:
+            raise RuntimeError(f"Subdivision evaluation produced empty strut mesh for {kind}")
+    finally:
+        bpy.data.meshes.remove(temp_mesh)
+
+    summary = {
+        "case": kind,
+        "output_mode": 'STRUTS',
+        "vertices": len(mesh.vertices),
+        "edges": len(mesh.edges),
+        "faces": len(mesh.polygons),
+        "volume": round(volume, 6),
+    }
+    results.append(summary)
+    return summary
+
+
 def run_case(kind, seed_count, gap, join_cells=None, apply_wireframe=False):
     reset_scene()
 
@@ -221,6 +295,7 @@ if welded_network["edges"] >= raw_network["edges"]:
     raise RuntimeError(f"Expected welded network to remove duplicate edges: raw={raw_network}, welded={welded_network}")
 if welded_network["vertices"] >= raw_network["vertices"]:
     raise RuntimeError(f"Expected welded network to reduce vertex count: raw={raw_network}, welded={welded_network}")
+run_lattice_strut_case("sphere_lattice_struts")
 run_case("cube_default_joined", seed_count=8, gap=0.05)
 run_case("sphere", seed_count=10, gap=0.08)
 run_case("cube_joined", seed_count=8, gap=0.05, join_cells=True, apply_wireframe=True)

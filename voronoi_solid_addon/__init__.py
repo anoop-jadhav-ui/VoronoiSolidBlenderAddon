@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Voronoi Solid Pattern",
     "author": "Hermes Agent",
-    "version": (0, 2, 0),
+    "version": (0, 3, 0),
     "blender": (4, 3, 0),
     "location": "View3D > Sidebar > Voronoi",
     "description": "Generate Voronoi-style cells from any closed mesh solid",
@@ -56,6 +56,7 @@ class VoronoiSolidSettings(PropertyGroup):
             ('CELLS', "Cells", "Keep the clipped Voronoi cell meshes"),
             ('RAW_EDGES', "Raw Edges", "Output the raw extracted edge network before cleanup"),
             ('FINAL_NETWORK', "Final Network", "Output a welded and deduplicated edge network for lattice development"),
+            ('STRUTS', "Struts", "Build a printable strut mesh from the cleaned lattice network"),
         ),
         default='CELLS',
     )
@@ -108,6 +109,27 @@ class VoronoiSolidSettings(PropertyGroup):
         min=0.0,
         max=1.0,
         description="Treat nearly identical lattice segments as duplicates within this tolerance",
+    )
+    strut_radius: FloatProperty(
+        name="Strut Radius",
+        default=0.03,
+        min=0.001,
+        max=1.0,
+        description="Radius of each printable lattice strut in Struts output mode",
+    )
+    node_radius_multiplier: FloatProperty(
+        name="Node Radius x",
+        default=1.25,
+        min=0.5,
+        max=5.0,
+        description="Multiplier applied to the strut radius when capping junction nodes",
+    )
+    strut_sides: IntProperty(
+        name="Strut Sides",
+        default=8,
+        min=3,
+        max=24,
+        description="Number of sides used for each cylindrical printable strut",
     )
     sample_attempt_multiplier: IntProperty(
         name="Sample Attempts x",
@@ -205,7 +227,7 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
             return {'CANCELLED'}
 
         if settings.generation_mode == 'LATTICE' and settings.lattice_output_mode != 'CELLS':
-            debug_object = build_lattice_network_object(
+            lattice_object = build_lattice_output_object(
                 target_collection,
                 created_objects,
                 source_obj.name,
@@ -213,9 +235,12 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
                 settings.weld_tolerance,
                 settings.minimum_edge_length,
                 settings.duplicate_edge_tolerance,
+                settings.strut_radius,
+                settings.node_radius_multiplier,
+                settings.strut_sides,
             )
             cleanup_generated_objects(created_objects)
-            created_objects = [debug_object]
+            created_objects = [lattice_object]
             created = 1
         elif settings.join_cells and created_objects:
             joined_object = join_objects(context, created_objects, f"{source_obj.name}_voronoi")
@@ -259,6 +284,10 @@ class VIEW3D_PT_voronoi_solid_panel(Panel):
                 col.prop(settings, "weld_tolerance")
                 col.prop(settings, "minimum_edge_length")
                 col.prop(settings, "duplicate_edge_tolerance")
+                if settings.lattice_output_mode == 'STRUTS':
+                    col.prop(settings, "strut_radius")
+                    col.prop(settings, "node_radius_multiplier")
+                    col.prop(settings, "strut_sides")
 
         col.prop(settings, "random_seed")
         col.prop(settings, "gap")
@@ -544,18 +573,28 @@ def shrink_cell(bm, center, gap):
     bm.normal_update()
 
 
-def build_lattice_network_object(collection, cell_objects, source_name, output_mode, weld_tolerance, minimum_edge_length, duplicate_edge_tolerance):
+def build_lattice_output_object(collection, cell_objects, source_name, output_mode, weld_tolerance, minimum_edge_length, duplicate_edge_tolerance, strut_radius, node_radius_multiplier, strut_sides):
     raw_segments = extract_edge_segments(cell_objects)
+
     if output_mode == 'RAW_EDGES':
         segments = [segment for segment in raw_segments if segment_length(segment) >= max(minimum_edge_length, EPSILON)]
-        unique_vertices = False
-    else:
-        segments = clean_edge_segments(raw_segments, weld_tolerance, minimum_edge_length, duplicate_edge_tolerance)
-        unique_vertices = True
+        if not segments:
+            raise RuntimeError("No lattice edge segments remained after extraction/cleanup")
+        return build_edge_debug_object(collection, source_name, output_mode, segments, False, weld_tolerance)
 
-    if not segments:
+    clean_segments = clean_edge_segments(raw_segments, weld_tolerance, minimum_edge_length, duplicate_edge_tolerance)
+    if not clean_segments:
         raise RuntimeError("No lattice edge segments remained after extraction/cleanup")
 
+    if output_mode == 'FINAL_NETWORK':
+        return build_edge_debug_object(collection, source_name, output_mode, clean_segments, True, weld_tolerance)
+    if output_mode == 'STRUTS':
+        return build_lattice_strut_object(collection, source_name, clean_segments, weld_tolerance, strut_radius, node_radius_multiplier, strut_sides)
+
+    raise RuntimeError(f"Unsupported lattice output mode: {output_mode}")
+
+
+def build_edge_debug_object(collection, source_name, output_mode, segments, unique_vertices, weld_tolerance):
     object_name = f"{source_name}_{output_mode.lower()}"
     mesh = bpy.data.meshes.new(f"{object_name}_mesh")
     vertices, edges = build_edge_mesh_data(segments, unique_vertices, weld_tolerance)
@@ -568,6 +607,77 @@ def build_lattice_network_object(collection, cell_objects, source_name, output_m
     obj["voronoi_lattice_output_mode"] = output_mode
     collection.objects.link(obj)
     return obj
+
+
+def build_lattice_strut_object(collection, source_name, segments, weld_tolerance, strut_radius, node_radius_multiplier, strut_sides):
+    object_name = f"{source_name}_struts"
+    bm = bmesh.new()
+
+    safe_radius = max(strut_radius, 0.001)
+    safe_sides = max(3, int(strut_sides))
+    node_radius = safe_radius * max(node_radius_multiplier, 0.5)
+
+    for start, end in segments:
+        append_cylinder_segment(bm, start, end, safe_radius, safe_sides)
+
+    for point in unique_segment_points(segments, weld_tolerance):
+        bmesh.ops.create_icosphere(
+            bm,
+            subdivisions=1,
+            radius=node_radius,
+            matrix=Matrix.Translation(point),
+        )
+
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=max(weld_tolerance, safe_radius * 0.25, EPSILON))
+    delete_loose_geometry(bm)
+    try:
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    except RuntimeError:
+        pass
+    bm.normal_update()
+
+    mesh = bpy.data.meshes.new(f"{object_name}_mesh")
+    bm.to_mesh(mesh)
+    mesh.update()
+    bm.free()
+
+    obj = bpy.data.objects.new(object_name, mesh)
+    obj.matrix_world = Matrix.Identity(4)
+    obj["voronoi_generation_mode"] = 'LATTICE'
+    obj["voronoi_lattice_output_mode"] = 'STRUTS'
+    collection.objects.link(obj)
+    return obj
+
+
+def append_cylinder_segment(bm, start, end, radius, sides):
+    delta = end - start
+    length = delta.length
+    if length <= EPSILON:
+        return
+
+    midpoint = start.lerp(end, 0.5)
+    rotation = delta.normalized().to_track_quat('Z', 'Y').to_matrix().to_4x4()
+    matrix = Matrix.Translation(midpoint) @ rotation
+    bmesh.ops.create_cone(
+        bm,
+        cap_ends=True,
+        cap_tris=False,
+        segments=max(3, int(sides)),
+        radius1=radius,
+        radius2=radius,
+        depth=length,
+        matrix=matrix,
+    )
+
+
+def unique_segment_points(segments, tolerance):
+    points = {}
+    for start, end in segments:
+        start_key = quantize_vector(start, max(tolerance, EPSILON))
+        end_key = quantize_vector(end, max(tolerance, EPSILON))
+        points.setdefault(start_key, start)
+        points.setdefault(end_key, end)
+    return [point.copy() for point in points.values()]
 
 
 def extract_edge_segments(objects):

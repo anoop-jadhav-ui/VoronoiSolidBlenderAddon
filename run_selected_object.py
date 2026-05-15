@@ -9,7 +9,7 @@ import voronoi_solid_addon
 
 # Change these values before running if needed.
 GENERATION_MODE = 'SOLID'  # 'SOLID' or 'LATTICE'
-LATTICE_OUTPUT_MODE = 'CELLS'  # 'CELLS', 'RAW_EDGES', or 'FINAL_NETWORK'
+LATTICE_OUTPUT_MODE = 'CELLS'  # 'CELLS', 'RAW_EDGES', 'FINAL_NETWORK', or 'STRUTS'
 CELL_COUNT = 24
 SURFACE_SEED_COUNT = 24
 INTERIOR_SEED_COUNT = 6
@@ -18,6 +18,9 @@ SURFACE_SHELL_BIAS = 1.0
 WELD_TOLERANCE = 0.02
 MINIMUM_EDGE_LENGTH = 0.01
 DUPLICATE_EDGE_TOLERANCE = 0.0005
+STRUT_RADIUS = 0.03
+NODE_RADIUS_MULTIPLIER = 1.25
+STRUT_SIDES = 8
 RANDOM_SEED = 7
 GAP = 0.08
 ATTEMPT_MULTIPLIER = 100
@@ -46,6 +49,9 @@ settings.surface_shell_bias = SURFACE_SHELL_BIAS
 settings.weld_tolerance = WELD_TOLERANCE
 settings.minimum_edge_length = MINIMUM_EDGE_LENGTH
 settings.duplicate_edge_tolerance = DUPLICATE_EDGE_TOLERANCE
+settings.strut_radius = STRUT_RADIUS
+settings.node_radius_multiplier = NODE_RADIUS_MULTIPLIER
+settings.strut_sides = STRUT_SIDES
 settings.random_seed = RANDOM_SEED
 settings.gap = GAP
 settings.sample_attempt_multiplier = ATTEMPT_MULTIPLIER

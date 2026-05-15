@@ -13,7 +13,7 @@ Files:
 What it does:
 - samples random points inside the selected solid
 - includes a `Lattice` mode that biases seeds to a shallow shell near the mesh surface
-- can output either clipped Voronoi cells, raw extracted lattice edges, or a welded/deduplicated debug edge network
+- can output either clipped Voronoi cells, raw extracted lattice edges, a welded/deduplicated debug edge network, or a printable strut mesh
 - computes a Voronoi-like clipped cell for each point
 - by default joins generated cells into one mesh object so modifiers affect the whole result
 - can optionally keep cells as separate mesh objects in a new collection
@@ -24,7 +24,7 @@ Current limitations:
 - this is a geometry prototype, not a polished production addon yet
 - performance drops as cell count rises because each cell is clipped against every other point
 - for very thin/complex shapes, increase `sample_attempt_multiplier`
-- `Final Network` is Iteration 2 only: it creates a debug-ready welded edge network, but it does not yet generate printable struts or smoothing like the Grasshopper/Rhino reference
+- `Struts` is Iteration 3 only: it creates a printable joined lattice mesh, but smoothing/relaxation and boundary cleanup are still pending
 
 Tested:
 - Blender 4.3.0
@@ -67,9 +67,13 @@ Lattice mode controls:
   - `Cells` — clipped Voronoi cells
   - `Raw Edges` — extracted edge network before cleanup
   - `Final Network` — welded/deduplicated debug network
-- `Weld Tolerance` — merges nearby network vertices in debug network output
+  - `Struts` — printable joined lattice mesh built from the cleaned network
+- `Weld Tolerance` — merges nearby network vertices in debug and strut output
 - `Min Edge Length` — drops tiny degenerate segments during cleanup
 - `Duplicate Edge Tol` — removes nearly identical segments during cleanup
+- `Strut Radius` — radius of each printable lattice tube
+- `Node Radius x` — expands node caps at welded junctions
+- `Strut Sides` — cylinder side count for printable struts
 
 Option 2: Run the included script directly in Blender
 1. Open Blender.
@@ -89,6 +93,9 @@ Option 2: Run the included script directly in Blender
    - `WELD_TOLERANCE`
    - `MINIMUM_EDGE_LENGTH`
    - `DUPLICATE_EDGE_TOLERANCE`
+   - `STRUT_RADIUS`
+   - `NODE_RADIUS_MULTIPLIER`
+   - `STRUT_SIDES`
    - `RANDOM_SEED`
    - `GAP`
    - `ATTEMPT_MULTIPLIER`
