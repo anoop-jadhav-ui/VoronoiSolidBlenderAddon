@@ -1,13 +1,14 @@
 bl_info = {
     "name": "Voronoi Solid Pattern",
     "author": "Hermes Agent",
-    "version": (0, 8, 0),
+    "version": (0, 9, 0),
     "blender": (4, 3, 0),
     "location": "View3D > Sidebar > Voronoi",
     "description": "Generate Voronoi-style cells from any closed mesh solid",
     "category": "Object",
 }
 
+import os
 import random
 
 import bpy
@@ -230,6 +231,28 @@ class VoronoiSolidSettings(PropertyGroup):
         default=True,
         description="Join all generated cells into one mesh object so one modifier affects the whole result",
     )
+    export_mode: EnumProperty(
+        name="Export Mode",
+        items=(
+            ('EVALUATED', "Evaluated Mesh", "Export the active mesh with modifiers applied"),
+            ('SOLIDIFY_SHELL', "Solidify Shell", "Export a temporary solidified shell version of the active mesh for printable surfaces"),
+        ),
+        default='EVALUATED',
+        description="Controls how the active mesh is prepared before ASCII STL export",
+    )
+    export_shell_thickness: FloatProperty(
+        name="Shell Thickness",
+        default=0.2,
+        min=0.001,
+        max=100.0,
+        description="Wall thickness used when exporting a temporary solidified shell",
+    )
+    export_filepath: StringProperty(
+        name="Export STL",
+        default="",
+        subtype='FILE_PATH',
+        description="Optional STL export path for the active mesh; blank uses the current blend directory or Blender temp folder",
+    )
 
 
 class OBJECT_OT_generate_voronoi_solid_cells(Operator):
@@ -374,6 +397,35 @@ class OBJECT_OT_generate_voronoi_solid_cells(Operator):
         return {'FINISHED'}
 
 
+class OBJECT_OT_export_voronoi_active_stl(Operator):
+    bl_idname = "object.export_voronoi_active_stl"
+    bl_label = "Export Active STL"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj is not None and obj.type == 'MESH'
+
+    def execute(self, context):
+        settings = context.scene.voronoi_solid_settings
+        obj = context.active_object
+
+        try:
+            filepath = resolve_export_filepath(settings.export_filepath, obj.name, settings.export_mode)
+            export_object_to_ascii_stl(context, obj, filepath, settings.export_mode, settings.export_shell_thickness)
+        except RuntimeError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+        settings.export_filepath = filepath
+        obj["voronoi_last_export_path"] = filepath
+        obj["voronoi_last_export_mode"] = settings.export_mode
+        obj["voronoi_last_export_shell_thickness"] = float(max(settings.export_shell_thickness, 0.001))
+        self.report({'INFO'}, f"Exported active mesh to '{filepath}'")
+        return {'FINISHED'}
+
+
 class VIEW3D_PT_voronoi_solid_panel(Panel):
     bl_label = "Voronoi Solid"
     bl_idname = "VIEW3D_PT_voronoi_solid_panel"
@@ -428,6 +480,14 @@ class VIEW3D_PT_voronoi_solid_panel(Panel):
         col.prop(settings, "keep_original")
         layout.separator()
         layout.operator(OBJECT_OT_generate_voronoi_solid_cells.bl_idname, icon='MOD_BUILD')
+
+        export_box = layout.box()
+        export_box.label(text="Export Helpers")
+        export_box.prop(settings, "export_mode")
+        if settings.export_mode == 'SOLIDIFY_SHELL':
+            export_box.prop(settings, "export_shell_thickness")
+        export_box.prop(settings, "export_filepath")
+        export_box.operator(OBJECT_OT_export_voronoi_active_stl.bl_idname, icon='EXPORT')
 
 
 def build_world_bmesh(obj, depsgraph):
@@ -1275,6 +1335,116 @@ def build_carved_output_object(collection, source_obj, cutter_obj, depsgraph=Non
     return carved
 
 
+def resolve_export_filepath(filepath, object_name, export_mode):
+    raw_path = (filepath or "").strip()
+    if raw_path:
+        resolved = bpy.path.abspath(raw_path)
+    else:
+        base_dir = bpy.path.abspath("//")
+        if not base_dir or base_dir in {"", "//"}:
+            base_dir = bpy.app.tempdir or os.path.expanduser("~")
+        suffix = "shell" if export_mode == 'SOLIDIFY_SHELL' else "evaluated"
+        resolved = os.path.join(base_dir, f"{sanitize_export_name(object_name)}_{suffix}.stl")
+
+    if not resolved.lower().endswith(".stl"):
+        resolved = f"{resolved}.stl"
+
+    directory = os.path.dirname(resolved)
+    if not directory:
+        raise RuntimeError("Could not resolve an STL export directory")
+    os.makedirs(directory, exist_ok=True)
+    return resolved
+
+
+def sanitize_export_name(name):
+    safe = "".join(character if character.isalnum() or character in {'-', '_'} else '_' for character in (name or "voronoi_export"))
+    safe = safe.strip("_")
+    return safe or "voronoi_export"
+
+
+def export_object_to_ascii_stl(context, obj, filepath, export_mode, shell_thickness):
+    depsgraph = context.evaluated_depsgraph_get()
+    base_mesh = bpy.data.meshes.new_from_object(obj.evaluated_get(depsgraph), depsgraph=depsgraph)
+    if base_mesh is None or len(base_mesh.vertices) == 0:
+        if base_mesh is not None and base_mesh.users == 0:
+            bpy.data.meshes.remove(base_mesh)
+        raise RuntimeError(f"Could not evaluate a mesh for STL export from '{obj.name}'")
+
+    try:
+        if export_mode == 'EVALUATED':
+            write_ascii_stl_mesh(base_mesh, obj.matrix_world, filepath, obj.name)
+            return
+        if export_mode != 'SOLIDIFY_SHELL':
+            raise RuntimeError(f"Unsupported export mode: {export_mode}")
+
+        temp_object = bpy.data.objects.new(f"{sanitize_export_name(obj.name)}_export_shell", base_mesh)
+        temp_object.matrix_world = obj.matrix_world.copy()
+        context.scene.collection.objects.link(temp_object)
+        shell_mesh = None
+        try:
+            modifier = temp_object.modifiers.new(name="VoronoiExportShell", type='SOLIDIFY')
+            modifier.thickness = max(float(shell_thickness), 0.001)
+            modifier.offset = 0.0
+            if hasattr(modifier, "use_even_offset"):
+                modifier.use_even_offset = True
+            if hasattr(modifier, "use_quality_normals"):
+                modifier.use_quality_normals = True
+            bpy.context.view_layer.update()
+            shell_mesh = bpy.data.meshes.new_from_object(temp_object.evaluated_get(depsgraph), depsgraph=depsgraph)
+        finally:
+            bpy.data.objects.remove(temp_object, do_unlink=True)
+
+        if shell_mesh is None or len(shell_mesh.polygons) == 0:
+            if shell_mesh is not None and shell_mesh.users == 0:
+                bpy.data.meshes.remove(shell_mesh)
+            raise RuntimeError(f"Solidify-shell export produced no faces for '{obj.name}'")
+        try:
+            write_ascii_stl_mesh(shell_mesh, obj.matrix_world, filepath, obj.name)
+        finally:
+            if shell_mesh.users == 0:
+                bpy.data.meshes.remove(shell_mesh)
+    finally:
+        if base_mesh.users == 0:
+            bpy.data.meshes.remove(base_mesh)
+
+
+def write_ascii_stl_mesh(mesh, matrix_world, filepath, solid_name):
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    if len(bm.faces) == 0:
+        bm.free()
+        raise RuntimeError(f"Mesh '{solid_name}' has no faces to export as STL")
+
+    bmesh.ops.triangulate(bm, faces=list(bm.faces))
+    bm.normal_update()
+    normal_matrix = matrix_world.to_3x3()
+    safe_name = sanitize_export_name(solid_name)
+
+    with open(filepath, "w", encoding="utf-8") as handle:
+        handle.write(f"solid {safe_name}\n")
+        for face in bm.faces:
+            coordinates = [matrix_world @ vert.co for vert in face.verts]
+            normal = normal_matrix @ face.normal
+            if normal.length <= EPSILON and len(coordinates) >= 3:
+                normal = (coordinates[1] - coordinates[0]).cross(coordinates[2] - coordinates[0])
+            if normal.length <= EPSILON:
+                normal = Vector((0.0, 0.0, 1.0))
+            else:
+                normal.normalize()
+            handle.write(
+                f"  facet normal {normal.x:.6f} {normal.y:.6f} {normal.z:.6f}\n"
+            )
+            handle.write("    outer loop\n")
+            for coordinate in coordinates:
+                handle.write(
+                    f"      vertex {coordinate.x:.6f} {coordinate.y:.6f} {coordinate.z:.6f}\n"
+                )
+            handle.write("    endloop\n")
+            handle.write("  endfacet\n")
+        handle.write(f"endsolid {safe_name}\n")
+    bm.free()
+
+
 def ensure_unique_collection(parent_collection, base_name):
     name = base_name
     suffix = 1
@@ -1330,6 +1500,7 @@ def join_objects(context, objects, object_name):
 classes = (
     VoronoiSolidSettings,
     OBJECT_OT_generate_voronoi_solid_cells,
+    OBJECT_OT_export_voronoi_active_stl,
     VIEW3D_PT_voronoi_solid_panel,
 )
 

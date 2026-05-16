@@ -110,6 +110,31 @@ def nearest_neighbor_distances(points):
     return distances
 
 
+def parse_ascii_stl_vertices(filepath):
+    if not os.path.exists(filepath):
+        raise RuntimeError(f"Expected STL export file at {filepath}")
+    vertices = []
+    facet_count = 0
+    with open(filepath, "r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if stripped.startswith("facet normal "):
+                facet_count += 1
+            elif stripped.startswith("vertex "):
+                _tag, x, y, z = stripped.split()
+                vertices.append((float(x), float(y), float(z)))
+    if facet_count <= 0 or not vertices:
+        raise RuntimeError(f"Expected ASCII STL facets and vertices in {filepath}")
+    return vertices, facet_count
+
+
+def bounds_from_vertices(vertices):
+    xs = [vertex[0] for vertex in vertices]
+    ys = [vertex[1] for vertex in vertices]
+    zs = [vertex[2] for vertex in vertices]
+    return (min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs))
+
+
 def run_seed_distribution_case(kind):
     reset_scene()
 
@@ -334,6 +359,7 @@ def run_lattice_preview_case(kind):
             "modifier_type": gn_mod.type,
         }
     )
+    return target
 
 
 def run_lattice_strut_case(
@@ -515,6 +541,58 @@ def run_carve_case(kind, seed_count, gap, array_count=1, array_offset=1.0):
             "boundary_edges": boundary_edges,
         }
     )
+    return carved
+
+
+def run_export_helper_case(kind, obj, export_mode, *, shell_thickness=0.2):
+    export_dir = os.path.join(bpy.app.tempdir, "voronoi_export_helper_tests")
+    os.makedirs(export_dir, exist_ok=True)
+    filepath = os.path.join(export_dir, f"{kind}.stl")
+    if os.path.exists(filepath):
+        os.remove(filepath)
+
+    settings = bpy.context.scene.voronoi_solid_settings
+    settings.export_mode = export_mode
+    settings.export_shell_thickness = shell_thickness
+    settings.export_filepath = filepath
+
+    bpy.ops.object.select_all(action='DESELECT')
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    result = bpy.ops.object.export_voronoi_active_stl()
+    if 'FINISHED' not in result:
+        raise RuntimeError(f"Export helper operator failed for {kind}: {result}")
+
+    if obj.get("voronoi_last_export_mode") != export_mode:
+        raise RuntimeError(f"Expected export mode metadata for {kind}, got {obj.get('voronoi_last_export_mode')}")
+    if bpy.path.abspath(filepath) != obj.get("voronoi_last_export_path"):
+        raise RuntimeError(f"Expected export path metadata for {kind}, got {obj.get('voronoi_last_export_path')}")
+
+    vertices, facet_count = parse_ascii_stl_vertices(filepath)
+    bounds_min, bounds_max = bounds_from_vertices(vertices)
+    summary = {
+        "case": kind,
+        "export_mode": export_mode,
+        "facet_count": facet_count,
+        "vertex_count": len(vertices),
+        "export_path": filepath,
+        "bounds_min": tuple(round(value, 6) for value in bounds_min),
+        "bounds_max": tuple(round(value, 6) for value in bounds_max),
+    }
+    results.append(summary)
+    return summary
+
+
+def run_shell_export_case(kind):
+    reset_scene()
+
+    bpy.ops.mesh.primitive_plane_add(size=2.0, location=(0, 0, 0))
+    plane = bpy.context.active_object
+    summary = run_export_helper_case(kind, plane, 'SOLIDIFY_SHELL', shell_thickness=0.2)
+    thickness = summary["bounds_max"][2] - summary["bounds_min"][2]
+    if thickness < 0.15:
+        raise RuntimeError(f"Expected solidify-shell export to create printable thickness for {kind}, got {thickness}")
+    return summary
 
 
 def run_case(kind, seed_count, gap, join_cells=None, apply_wireframe=False):
@@ -605,8 +683,14 @@ if settings.solid_output_mode != 'CELLS':
 for required_attr in ("node_subdivisions", "boundary_cleanup_iterations", "boundary_component_max_edges"):
     if not hasattr(settings, required_attr):
         raise RuntimeError(f"Expected settings property '{required_attr}' to exist for exposed cleanup/cap controls")
+for required_attr in ("export_mode", "export_shell_thickness", "export_filepath"):
+    if not hasattr(settings, required_attr):
+        raise RuntimeError(f"Expected export-helper property '{required_attr}' to exist")
+if settings.export_mode != 'EVALUATED':
+    raise RuntimeError(f"Expected export helper mode to default to EVALUATED, got {settings.export_mode}")
 run_seed_distribution_case("cube_blue_noise")
-run_carve_case("cube_carved", seed_count=8, gap=0.12)
+carved = run_carve_case("cube_carved", seed_count=8, gap=0.12)
+run_export_helper_case("cube_carved_export", carved, 'EVALUATED')
 run_carve_case("cube_carved_array", seed_count=12, gap=0.08, array_count=2, array_offset=1.4)
 run_lattice_seed_case("sphere_lattice")
 raw_network = run_lattice_network_case("sphere_lattice_raw", 'RAW_EDGES')
@@ -622,7 +706,9 @@ if relaxed_network["edges"] > welded_network["edges"] or relaxed_network["vertic
     raise RuntimeError(f"Expected relaxed network cleanup to keep topology size stable or smaller: welded={welded_network}, relaxed={relaxed_network}")
 if relaxed_network["vertex_signature"] == welded_network["vertex_signature"]:
     raise RuntimeError(f"Expected relaxed network geometry to change vertex positions: welded={welded_network}, relaxed={relaxed_network}")
-run_lattice_preview_case("sphere_lattice_preview")
+preview = run_lattice_preview_case("sphere_lattice_preview")
+run_export_helper_case("sphere_lattice_preview_export", preview, 'EVALUATED')
+run_shell_export_case("plane_shell_export")
 default_struts = run_lattice_strut_case("sphere_lattice_struts")
 detailed_struts = run_lattice_strut_case(
     "sphere_lattice_struts_detailed_nodes",

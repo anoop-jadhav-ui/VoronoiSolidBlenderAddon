@@ -31,6 +31,10 @@ BOUNDARY_COMPONENT_MAX_EDGES = 2
 STRUT_REMESH_VOXEL_SIZE = 0.0  # 0.0 = auto
 STRUT_SMOOTH_ITERATIONS = 4
 STRUT_SMOOTH_FACTOR = 0.35
+EXPORT_AFTER_GENERATION = False
+EXPORT_MODE = 'EVALUATED'  # 'EVALUATED' or 'SOLIDIFY_SHELL'
+EXPORT_SHELL_THICKNESS = 0.2
+EXPORT_FILEPATH = ""  # blank = current blend directory or Blender temp folder
 RANDOM_SEED = 7
 GAP = 0.08
 ATTEMPT_MULTIPLIER = 100
@@ -72,6 +76,9 @@ settings.boundary_component_max_edges = BOUNDARY_COMPONENT_MAX_EDGES
 settings.strut_remesh_voxel_size = STRUT_REMESH_VOXEL_SIZE
 settings.strut_smooth_iterations = STRUT_SMOOTH_ITERATIONS
 settings.strut_smooth_factor = STRUT_SMOOTH_FACTOR
+settings.export_mode = EXPORT_MODE
+settings.export_shell_thickness = EXPORT_SHELL_THICKNESS
+settings.export_filepath = EXPORT_FILEPATH
 settings.random_seed = RANDOM_SEED
 settings.gap = GAP
 settings.sample_attempt_multiplier = ATTEMPT_MULTIPLIER
@@ -83,3 +90,16 @@ bpy.context.view_layer.objects.active = obj
 obj.select_set(True)
 result = bpy.ops.object.generate_voronoi_solid_cells()
 print("Voronoi generation result:", result)
+
+if result != {'FINISHED'}:
+    raise RuntimeError(f"Voronoi generation did not finish successfully: {result}")
+
+if EXPORT_AFTER_GENERATION:
+    active_after_generation = bpy.context.view_layer.objects.active
+    if active_after_generation is None or active_after_generation.type != 'MESH':
+        raise RuntimeError("Export requested, but there is no active mesh object after generation")
+    export_result = bpy.ops.object.export_voronoi_active_stl()
+    print("Voronoi export result:", export_result)
+    if export_result != {'FINISHED'}:
+        raise RuntimeError(f"Voronoi export did not finish successfully: {export_result}")
+    print("Exported STL:", bpy.context.scene.voronoi_solid_settings.export_filepath)

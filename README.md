@@ -12,13 +12,14 @@ Files:
 - `test_voronoi_addon.py` — headless validation script
 
 Current release:
-- addon version: `0.8.0`
+- addon version: `0.9.0`
 - Blender target: `4.3.0`
 
 What it does:
 - samples interior and shell seeds with `Blue Noise` spacing by default for more even Voronoi distribution, with optional `Random` sampling when you want looser variation
 - includes a `Lattice` mode that biases seeds to a shallow shell near the mesh surface
 - can output either clipped Voronoi cells, a carved boolean solid result, raw extracted lattice edges, a welded/deduplicated debug edge network, a Geometry Nodes tube preview, or a printable strut mesh
+- includes ASCII STL export helpers for active results, with either direct evaluated-mesh export or a temporary solidify-shell pass for printable perforated surfaces
 - computes a Voronoi-like clipped cell for each point
 - by default joins generated cells into one mesh object so modifiers affect the whole result
 - can optionally keep cells as separate mesh objects in a new collection
@@ -39,6 +40,7 @@ Tested:
 - modifier-backed carved mode: array-modified cube keeps evaluated source extents (`source_max_x = carved_max_x = 3.8`) so boolean carving respects unapplied source modifiers
 - UV sphere: 10 cells generated successfully
 - lattice raw-edge, welded-network, Geometry Nodes preview, relaxed-network, and printable-strut outputs validated in the headless suite
+- export helpers validated in the headless suite for carved solids, Geometry Nodes preview results, and solidify-shell export from a thin plane
 - Geometry Nodes preview now verifies an edge-only base mesh plus evaluated tube faces through the modifier stack
 - printable strut output now verifies watertight cleanup with `boundary_edges = 0` on the test mesh
 
@@ -72,6 +74,10 @@ Option 1: Run as an installable addon in Blender
    - `Collection`
    - `Join Cells` (enabled by default so one modifier affects the whole result)
 10. Click `Generate Voronoi Cells`.
+11. Optional: use the `Export Helpers` box to export the active result as ASCII STL.
+    - `Evaluated Mesh` exports the current active object with modifiers applied.
+    - `Solidify Shell` applies a temporary Solidify modifier during export so thin or perforated surfaces become printable shells.
+    - Leave `Export STL` blank to write into the current blend directory, or Blender's temp folder if the blend file is unsaved.
 
 Generation controls:
 - `Solid Output`
@@ -104,6 +110,10 @@ Generation controls:
 - `Remesh Voxel` — explicit voxel size for printable strut cleanup; `0` keeps the automatic detail size
 - `Smooth Iterations` — extra post-remesh smoothing passes for printable struts
 - `Smooth Factor` — strength of each post-remesh smoothing pass
+- `Export Helpers`
+  - `Evaluated Mesh` — exports the active mesh with modifiers applied as ASCII STL
+  - `Solidify Shell` — exports a temporary solidified shell for printable perforated/thin surfaces using the chosen shell thickness
+  - `Export STL` — optional output path; blank uses the current blend directory or Blender's temp folder
 
 Option 2: Run the included script directly in Blender
 1. Open Blender.
@@ -136,6 +146,10 @@ Option 2: Run the included script directly in Blender
    - `STRUT_REMESH_VOXEL_SIZE`
    - `STRUT_SMOOTH_ITERATIONS`
    - `STRUT_SMOOTH_FACTOR`
+   - `EXPORT_AFTER_GENERATION`
+   - `EXPORT_MODE`
+   - `EXPORT_SHELL_THICKNESS`
+   - `EXPORT_FILEPATH`
    - `RANDOM_SEED`
    - `GAP`
    - `ATTEMPT_MULTIPLIER`
@@ -144,6 +158,7 @@ Option 2: Run the included script directly in Blender
    - `JOIN_CELLS`
 7. Click `Run Script`.
 8. Generated cells will appear in a new collection.
+9. If `EXPORT_AFTER_GENERATION = True`, the script immediately runs the addon export helper and prints the exported STL path.
 
 Recommended starting values:
 - simple object: `CELL_COUNT = 12`
@@ -165,6 +180,7 @@ Recommended printable strut preset for a medium-sized object:
 - use `STRUT_SMOOTH_ITERATIONS = 4`
 - use `STRUT_SMOOTH_FACTOR = 0.35 to 0.45`
 - keep `STRUT_REMESH_VOXEL_SIZE = 0.0` first, then switch to an explicit voxel size only if you need to trade detail for a cleaner printable surface
+- for quick printable export from a thin or perforated surface, set `EXPORT_AFTER_GENERATION = True`, `EXPORT_MODE = 'SOLIDIFY_SHELL'`, and start with `EXPORT_SHELL_THICKNESS = 0.2`
 
 If generation fails:
 - make sure the object is a closed mesh
@@ -172,6 +188,4 @@ If generation fails:
 - recalculate normals in Edit Mode
 - try reducing `CELL_COUNT`
 - increase `ATTEMPT_MULTIPLIER`
-
-Next good improvements:
-- export helpers for 3D-printable shells or perforated surfaces
+- if STL export fails, make sure the active result is still a mesh object and that the output directory is writable
