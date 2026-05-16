@@ -252,6 +252,90 @@ def run_lattice_network_case(kind, output_mode, *, relax_iterations=0, relax_str
     return summary
 
 
+def run_lattice_preview_case(kind):
+    reset_scene()
+
+    if kind != "sphere_lattice_preview":
+        raise ValueError(kind)
+
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=1.25, segments=32, ring_count=16, location=(0, 0, 0))
+    src = bpy.context.active_object
+
+    settings = bpy.context.scene.voronoi_solid_settings
+    settings.generation_mode = 'LATTICE'
+    settings.lattice_output_mode = 'GN_PREVIEW'
+    settings.surface_seed_count = 10
+    settings.interior_seed_count = 2
+    settings.surface_shell_depth = 0.12
+    settings.surface_shell_bias = 1.0
+    settings.random_seed = 11
+    settings.gap = 0.0
+    settings.sample_attempt_multiplier = 100
+    settings.keep_original = True
+    settings.collection_name = f"{kind}_cells"
+    settings.join_cells = True
+    settings.weld_tolerance = 0.03
+    settings.minimum_edge_length = 0.02
+    settings.duplicate_edge_tolerance = 0.0005
+    settings.lattice_relax_iterations = 4
+    settings.lattice_relax_strength = 0.35
+    settings.strut_radius = 0.03
+    settings.strut_sides = 8
+
+    bpy.context.view_layer.objects.active = src
+    src.select_set(True)
+
+    result = bpy.ops.object.generate_voronoi_solid_cells()
+    if 'FINISHED' not in result:
+        raise RuntimeError(f"Operator failed for {kind}: {result}")
+
+    generated = [c for c in bpy.data.collections if c.name.startswith(settings.collection_name)]
+    if not generated:
+        raise RuntimeError(f"No collection created for {kind}")
+
+    collection = max(generated, key=lambda c: len(c.objects))
+    mesh_objects = [obj for obj in collection.objects if obj.type == 'MESH']
+    if len(mesh_objects) != 1:
+        raise RuntimeError(f"Expected one GN preview object for {kind}, got {len(mesh_objects)}")
+
+    target = mesh_objects[0]
+    mesh = target.data
+    if len(mesh.edges) == 0:
+        raise RuntimeError(f"Expected GN preview base mesh to keep lattice edges for {kind}, found none")
+    if len(mesh.polygons) != 0:
+        raise RuntimeError(f"Expected GN preview base mesh to stay edge-only for {kind}, found {len(mesh.polygons)} faces")
+
+    gn_mod = next((mod for mod in target.modifiers if mod.type == 'NODES'), None)
+    if gn_mod is None:
+        raise RuntimeError(f"Expected Geometry Nodes preview modifier for {kind}")
+
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = target.evaluated_get(depsgraph)
+    temp_mesh = bpy.data.meshes.new_from_object(evaluated, depsgraph=depsgraph)
+    try:
+        if len(temp_mesh.polygons) == 0:
+            raise RuntimeError(f"Expected GN preview evaluation to create faces for {kind}, found none")
+        evaluated_faces = len(temp_mesh.polygons)
+        evaluated_vertices = len(temp_mesh.vertices)
+    finally:
+        bpy.data.meshes.remove(temp_mesh)
+
+    if target.get("voronoi_lattice_output_mode") != 'GN_PREVIEW':
+        raise RuntimeError(f"Expected GN preview metadata on output object, got {target.get('voronoi_lattice_output_mode')}")
+
+    results.append(
+        {
+            "case": kind,
+            "output_mode": 'GN_PREVIEW',
+            "base_vertices": len(mesh.vertices),
+            "base_edges": len(mesh.edges),
+            "evaluated_vertices": evaluated_vertices,
+            "evaluated_faces": evaluated_faces,
+            "modifier_type": gn_mod.type,
+        }
+    )
+
+
 def run_lattice_strut_case(
     kind,
     *,
@@ -538,6 +622,7 @@ if relaxed_network["edges"] > welded_network["edges"] or relaxed_network["vertic
     raise RuntimeError(f"Expected relaxed network cleanup to keep topology size stable or smaller: welded={welded_network}, relaxed={relaxed_network}")
 if relaxed_network["vertex_signature"] == welded_network["vertex_signature"]:
     raise RuntimeError(f"Expected relaxed network geometry to change vertex positions: welded={welded_network}, relaxed={relaxed_network}")
+run_lattice_preview_case("sphere_lattice_preview")
 default_struts = run_lattice_strut_case("sphere_lattice_struts")
 detailed_struts = run_lattice_strut_case(
     "sphere_lattice_struts_detailed_nodes",

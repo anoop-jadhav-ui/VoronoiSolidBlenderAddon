@@ -12,13 +12,13 @@ Files:
 - `test_voronoi_addon.py` — headless validation script
 
 Current release:
-- addon version: `0.7.0`
+- addon version: `0.8.0`
 - Blender target: `4.3.0`
 
 What it does:
 - samples interior and shell seeds with `Blue Noise` spacing by default for more even Voronoi distribution, with optional `Random` sampling when you want looser variation
 - includes a `Lattice` mode that biases seeds to a shallow shell near the mesh surface
-- can output either clipped Voronoi cells, a carved boolean solid result, raw extracted lattice edges, a welded/deduplicated debug edge network, or a printable strut mesh
+- can output either clipped Voronoi cells, a carved boolean solid result, raw extracted lattice edges, a welded/deduplicated debug edge network, a Geometry Nodes tube preview, or a printable strut mesh
 - computes a Voronoi-like clipped cell for each point
 - by default joins generated cells into one mesh object so modifiers affect the whole result
 - can optionally keep cells as separate mesh objects in a new collection
@@ -29,6 +29,7 @@ Current limitations:
 - this is a geometry prototype, not a polished production addon yet
 - performance drops as cell count rises because each cell is clipped against every other point
 - for very thin/complex shapes, increase `sample_attempt_multiplier`
+- `GN Preview` now turns the cleaned lattice network into a live Geometry Nodes tube preview so radius and side-count tweaks stay lightweight before committing to printable mesh cleanup
 - `Struts` now performs an Iteration 5 cleanup pass with gentle default network relaxation, configurable node-detail and boundary-repair controls, voxel remesh cleanup, and post-remesh smoothing to produce a watertight printable lattice mesh while getting closer to the Grasshopper-style reference
 
 Tested:
@@ -37,7 +38,8 @@ Tested:
 - cube carved mode: boolean result generated successfully with lower volume than the source cube and `boundary_edges = 0`
 - modifier-backed carved mode: array-modified cube keeps evaluated source extents (`source_max_x = carved_max_x = 3.8`) so boolean carving respects unapplied source modifiers
 - UV sphere: 10 cells generated successfully
-- lattice raw-edge, welded-network, relaxed-network, and printable-strut outputs validated in the headless suite
+- lattice raw-edge, welded-network, Geometry Nodes preview, relaxed-network, and printable-strut outputs validated in the headless suite
+- Geometry Nodes preview now verifies an edge-only base mesh plus evaluated tube faces through the modifier stack
 - printable strut output now verifies watertight cleanup with `boundary_edges = 0` on the test mesh
 
 Headless test command:
@@ -46,7 +48,7 @@ Headless test command:
 ```
 
 Expected result:
-- Blender prints passing generation checks for the cube and sphere cases, including lattice/strut validation
+- Blender prints passing generation checks for the cube and sphere cases, including lattice preview/strut validation
 - exits with code 0
 
 Option 1: Run as an installable addon in Blender
@@ -86,15 +88,16 @@ Generation controls:
   - `Cells` — clipped Voronoi cells
   - `Raw Edges` — extracted edge network before cleanup
   - `Final Network` — welded/deduplicated debug network
+  - `GN Preview` — cleaned lattice network plus a live Geometry Nodes tube modifier for fast visual tuning
   - `Struts` — printable joined lattice mesh built from the cleaned network
-- `Weld Tolerance` — merges nearby network vertices in debug and strut output
+- `Weld Tolerance` — merges nearby network vertices in debug, preview, and strut output
 - `Min Edge Length` — drops tiny degenerate segments during cleanup
 - `Duplicate Edge Tol` — removes nearly identical segments during cleanup
 - `Relax Iterations` — optional Laplacian-style relaxation passes on the cleaned lattice network (defaults to a gentle value for a softer Grasshopper-like flow)
 - `Relax Strength` — how strongly each relaxed lattice vertex moves toward its neighbors
-- `Strut Radius` — radius of each printable lattice tube
+- `Strut Radius` — radius of each preview/printable lattice tube
 - `Node Radius x` — expands node caps at welded junctions
-- `Strut Sides` — cylinder side count for printable struts
+- `Strut Sides` — cylinder side count for preview and printable struts
 - `Node Detail` — subdivision level for the spherical junction caps
 - `Boundary Cleanup` — how many repair passes to run when closing tiny printable strut openings
 - `Tiny Boundary Max` — boundary loops up to this edge count are treated as tiny cleanup candidates
@@ -147,7 +150,7 @@ Recommended starting values:
 - more detailed breakup: `CELL_COUNT = 20 to 40`
 - visible gaps: `GAP = 0.05 to 0.12`
 - complex meshes: `ATTEMPT_MULTIPLIER = 80 to 150`
-- relaxed lattice preview: `LATTICE_RELAX_ITERATIONS = 3 to 6`, `LATTICE_RELAX_STRENGTH = 0.25 to 0.45`
+- relaxed lattice preview: `LATTICE_OUTPUT_MODE = 'GN_PREVIEW'`, `LATTICE_RELAX_ITERATIONS = 3 to 6`, `LATTICE_RELAX_STRENGTH = 0.25 to 0.45`, `STRUT_RADIUS = 0.02 to 0.05`
 - printable node detail: `NODE_SUBDIVISIONS = 1 to 2` for lighter meshes, `3` only when you need rounder junctions and can afford the extra density
 - printable boundary repair: `BOUNDARY_CLEANUP_ITERATIONS = 4 to 8`, `BOUNDARY_COMPONENT_MAX_EDGES = 2 to 6`
 - printable struts: `STRUT_REMESH_VOXEL_SIZE = 0.0` for auto or `0.02 to 0.05` to tune detail, `STRUT_SMOOTH_ITERATIONS = 2 to 6`, `STRUT_SMOOTH_FACTOR = 0.25 to 0.45`
@@ -171,7 +174,4 @@ If generation fails:
 - increase `ATTEMPT_MULTIPLIER`
 
 Next good improvements:
-- blue-noise / Poisson sampling instead of pure random sampling
-- boolean pattern carving mode instead of only generating separate cells
-- Geometry Nodes-assisted preview workflow
 - export helpers for 3D-printable shells or perforated surfaces

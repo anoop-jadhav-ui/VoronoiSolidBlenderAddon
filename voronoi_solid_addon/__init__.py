@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Voronoi Solid Pattern",
     "author": "Hermes Agent",
-    "version": (0, 7, 0),
+    "version": (0, 8, 0),
     "blender": (4, 3, 0),
     "location": "View3D > Sidebar > Voronoi",
     "description": "Generate Voronoi-style cells from any closed mesh solid",
@@ -65,6 +65,7 @@ class VoronoiSolidSettings(PropertyGroup):
             ('CELLS', "Cells", "Keep the clipped Voronoi cell meshes"),
             ('RAW_EDGES', "Raw Edges", "Output the raw extracted edge network before cleanup"),
             ('FINAL_NETWORK', "Final Network", "Output a welded and deduplicated edge network for lattice development"),
+            ('GN_PREVIEW', "GN Preview", "Generate a cleaned lattice edge network with a Geometry Nodes tube preview"),
             ('STRUTS', "Struts", "Build a printable strut mesh from the cleaned lattice network"),
         ),
         default='CELLS',
@@ -405,10 +406,11 @@ class VIEW3D_PT_voronoi_solid_panel(Panel):
                 col.prop(settings, "lattice_relax_iterations")
                 if settings.lattice_relax_iterations > 0:
                     col.prop(settings, "lattice_relax_strength")
-                if settings.lattice_output_mode == 'STRUTS':
+                if settings.lattice_output_mode in {'GN_PREVIEW', 'STRUTS'}:
                     col.prop(settings, "strut_radius")
-                    col.prop(settings, "node_radius_multiplier")
                     col.prop(settings, "strut_sides")
+                if settings.lattice_output_mode == 'STRUTS':
+                    col.prop(settings, "node_radius_multiplier")
                     col.prop(settings, "node_subdivisions")
                     col.prop(settings, "boundary_cleanup_iterations")
                     col.prop(settings, "boundary_component_max_edges")
@@ -774,6 +776,8 @@ def build_lattice_output_object(
 
     if output_mode == 'FINAL_NETWORK':
         return build_edge_debug_object(collection, source_name, output_mode, clean_segments, True, weld_tolerance)
+    if output_mode == 'GN_PREVIEW':
+        return build_lattice_preview_object(collection, source_name, clean_segments, weld_tolerance, strut_radius, strut_sides)
     if output_mode == 'STRUTS':
         return build_lattice_strut_object(
             collection,
@@ -807,6 +811,70 @@ def build_edge_debug_object(collection, source_name, output_mode, segments, uniq
     obj["voronoi_lattice_output_mode"] = output_mode
     collection.objects.link(obj)
     return obj
+
+
+def build_lattice_preview_object(collection, source_name, segments, weld_tolerance, strut_radius, strut_sides):
+    obj = build_edge_debug_object(collection, source_name, 'GN_PREVIEW', segments, True, weld_tolerance)
+    obj.name = f"{source_name}_gn_preview"
+    if obj.data is not None:
+        obj.data.name = f"{obj.name}_mesh"
+    safe_radius = max(float(strut_radius), 0.001)
+    safe_sides = max(3, int(strut_sides))
+    obj["voronoi_preview_radius"] = safe_radius
+    obj["voronoi_preview_sides"] = safe_sides
+    ensure_lattice_preview_modifier(obj, safe_radius, safe_sides)
+    return obj
+
+
+def ensure_lattice_preview_modifier(obj, radius, sides):
+    modifier = next((mod for mod in obj.modifiers if mod.type == 'NODES' and mod.name == 'VoronoiPreview'), None)
+    if modifier is None:
+        modifier = obj.modifiers.new(name='VoronoiPreview', type='NODES')
+    modifier.node_group = ensure_lattice_preview_node_group(radius, sides)
+    return modifier
+
+
+def ensure_lattice_preview_node_group(radius, sides):
+    safe_radius = max(float(radius), 0.001)
+    safe_sides = max(3, int(sides))
+    group_name = f"VoronoiLatticePreview_{safe_sides}_{int(round(safe_radius * 10000))}"
+    existing = bpy.data.node_groups.get(group_name)
+    if existing is not None:
+        return existing
+
+    group = bpy.data.node_groups.new(group_name, 'GeometryNodeTree')
+    if hasattr(group, 'interface'):
+        group.interface.new_socket(name='Geometry', in_out='INPUT', socket_type='NodeSocketGeometry')
+        group.interface.new_socket(name='Geometry', in_out='OUTPUT', socket_type='NodeSocketGeometry')
+    else:
+        group.inputs.new('NodeSocketGeometry', 'Geometry')
+        group.outputs.new('NodeSocketGeometry', 'Geometry')
+
+    nodes = group.nodes
+    links = group.links
+    nodes.clear()
+
+    group_input = nodes.new('NodeGroupInput')
+    group_input.location = (-520, 0)
+    group_output = nodes.new('NodeGroupOutput')
+    group_output.location = (340, 0)
+    mesh_to_curve = nodes.new('GeometryNodeMeshToCurve')
+    mesh_to_curve.location = (-300, 0)
+    mesh_to_curve.mode = 'EDGES'
+    profile_circle = nodes.new('GeometryNodeCurvePrimitiveCircle')
+    profile_circle.location = (-80, -180)
+    profile_circle.mode = 'RADIUS'
+    profile_circle.inputs['Resolution'].default_value = safe_sides
+    profile_circle.inputs['Radius'].default_value = safe_radius
+    curve_to_mesh = nodes.new('GeometryNodeCurveToMesh')
+    curve_to_mesh.location = (120, 0)
+    curve_to_mesh.inputs['Fill Caps'].default_value = True
+
+    links.new(group_input.outputs[0], mesh_to_curve.inputs['Mesh'])
+    links.new(mesh_to_curve.outputs['Curve'], curve_to_mesh.inputs['Curve'])
+    links.new(profile_circle.outputs['Curve'], curve_to_mesh.inputs['Profile Curve'])
+    links.new(curve_to_mesh.outputs['Mesh'], group_output.inputs[0])
+    return group
 
 
 def build_lattice_strut_object(
